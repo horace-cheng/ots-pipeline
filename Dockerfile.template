@@ -1,0 +1,18 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+# 安裝共用依賴
+COPY shared/requirements.txt ./shared_requirements.txt
+RUN pip install --no-cache-dir -r shared_requirements.txt
+
+# 複製 shared 套件
+COPY shared/ ./shared/
+
+# 複製 Job 程式碼（由各 Job 的 Dockerfile 指定）
+COPY ${JOB_DIR}/ ./job/
+
+CMD ["python", "job/main.py"]
