@@ -155,7 +155,6 @@ def write_corpus(translations: list[dict], metadata: dict, qa_result: dict | Non
                 "source_lang":     metadata["source_lang"],
                 "target_lang":     metadata["target_lang"],
                 "source_text":     t["source"],
-                "bridge_text":     t.get("bridge_text", ""),
                 "translated_text": t["translated"],
                 "qa_score":        float(qa_score) if qa_score else None,
                 "track_type":      "fast",
