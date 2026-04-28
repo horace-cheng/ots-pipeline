@@ -242,21 +242,44 @@ def run():
         # 主要交付使用 HTML 格式
         update_order_field("gcs_output_path", html_path)
 
-        # 更新訂單狀態 → delivered
+        # ── 判斷 QA 分數是否達標 ──────────────────────────────────────────
+        llm_score = None
+        if qa_result and qa_result.get("layer4_llm_judge"):
+            llm_score = qa_result["layer4_llm_judge"].get("score")
+
+        qa_passed = llm_score is None or llm_score >= cfg.LLM_JUDGE_MIN_SCORE
+
+        if qa_passed:
+            final_status = "delivered"
+        else:
+            final_status = "qa_review"
+            logger.warning(
+                f"QA score {llm_score:.1f} < threshold {cfg.LLM_JUDGE_MIN_SCORE} "
+                f"— setting order to qa_review instead of delivered"
+            )
+
         from sqlalchemy import text as sqla_text
         with get_db() as db:
-            db.execute(sqla_text("""
-                UPDATE orders
-                SET status       = 'delivered',
-                    delivered_at = NOW()
-                WHERE id = :order_id
-            """), {"order_id": cfg.ORDER_ID})
+            if qa_passed:
+                db.execute(sqla_text("""
+                    UPDATE orders
+                    SET status       = 'delivered',
+                        delivered_at = NOW()
+                    WHERE id = :order_id
+                """), {"order_id": cfg.ORDER_ID})
+            else:
+                db.execute(sqla_text("""
+                    UPDATE orders
+                    SET status = 'qa_review'
+                    WHERE id = :order_id
+                """), {"order_id": cfg.ORDER_ID})
 
         # ── 語料寫入 BigQuery ─────────────────────────────────────────────
         write_corpus(translations, metadata, qa_result)
 
-        # ── 通知客戶 ──────────────────────────────────────────────────────
-        notify_delivery()
+        # ── 通知客戶（僅 QA 通過時）──────────────────────────────────────
+        if qa_passed:
+            notify_delivery()
 
         update_job_status("format_deliver", "success")
         logger.info(f"=== ft_deliver DONE — output: {html_path} ===")
