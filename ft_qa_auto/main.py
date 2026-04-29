@@ -74,7 +74,7 @@ def layer1_structure(segments: list[dict], translations: list[dict],
                 "paragraph_index": idx,
                 "flag_level":      "must_fix",
                 "flag_type":       "missing_segment",
-                "source_segment":  src_text[:200],
+                "source_segment":  src_text,
                 "translated_segment": tgt_text,
             })
             flag_count += 1
@@ -92,8 +92,8 @@ def layer1_structure(segments: list[dict], translations: list[dict],
                         "paragraph_index": idx,
                         "flag_level":      level,
                         "flag_type":       "length_ratio",
-                        "source_segment":  src_text[:200],
-                        "translated_segment": tgt_text[:200],
+                        "source_segment":  src_text,
+                        "translated_segment": tgt_text,
                     })
                     flag_count += 1
                     continue
@@ -160,8 +160,8 @@ Translation: {tgt_text[:300]}"""
                     "paragraph_index": idx,
                     "flag_level":      "must_fix",
                     "flag_type":       "semantic_drift",
-                    "source_segment":  src_text[:200],
-                    "translated_segment": tgt_text[:200],
+                    "source_segment":  src_text,
+                    "translated_segment": tgt_text,
                 })
                 flag_count += 1
             elif score < 65:
@@ -169,8 +169,8 @@ Translation: {tgt_text[:300]}"""
                     "paragraph_index": idx,
                     "flag_level":      "review",
                     "flag_type":       "semantic_drift",
-                    "source_segment":  src_text[:200],
-                    "translated_segment": tgt_text[:200],
+                    "source_segment":  src_text,
+                    "translated_segment": tgt_text,
                 })
                 flag_count += 1
             else:
@@ -257,8 +257,8 @@ Segments to evaluate:
                         "paragraph_index": trans["index"],
                         "flag_level":      "must_fix" if score < 40 else "review",
                         "flag_type":       "readability_low",
-                        "source_segment":  trans["source"][:200],
-                        "translated_segment": trans["translated"][:200],
+                        "source_segment":  trans["source"],
+                        "translated_segment": trans["translated"],
                     })
 
         except Exception as e:
