@@ -94,6 +94,7 @@ def split_paragraphs(text: str) -> list[str]:
 def run():
     logger.info(f"=== ft_preprocess START — order: {cfg.ORDER_ID} ===")
     update_job_status("preprocess", "running")
+    update_order_field("status", "processing")
 
     try:
         # ── 1. 取得訂單資訊 ──────────────────────────────────────────────

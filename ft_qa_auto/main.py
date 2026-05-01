@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config     import cfg
-from shared.db         import update_job_status, write_qa_flags
+from shared.db         import update_job_status, write_qa_flags, update_order_field
 from shared.storage    import read_temp_json, write_temp_json
 from shared.gemini     import judge
 from shared.terminology import get_terms, scan_terminology_inconsistencies
@@ -278,6 +278,7 @@ Segments to evaluate:
 def run():
     logger.info(f"=== ft_qa_auto START — order: {cfg.ORDER_ID} ===")
     update_job_status("qa_auto", "running")
+    update_order_field("status", "processing")
 
     try:
         translations = read_temp_json("translations.json")
@@ -309,19 +310,22 @@ def run():
         # ── 寫入 DB ───────────────────────────────────────────────────────
         write_qa_flags(all_flags)
 
+        must_fix_count = sum(1 for f in all_flags if f["flag_level"] == "must_fix")
         qa_result = {
             "layer1_structure":   l1_result,
             "layer2_semantic":    l2_result,
             "layer3_terminology": l3_result,
             "layer4_llm_judge":   l4_result,
+            "must_fix_count":     must_fix_count,
         }
 
         # QA 結果寫入 temp，供後續 Job 讀取
         write_temp_json("qa_result.json", qa_result)
 
-        must_fix_count = sum(1 for f in all_flags if f["flag_level"] == "must_fix")
-        update_job_status("qa_auto", "success", qa_result=qa_result)
+        if must_fix_count > 0:
+            update_order_field("status", "qa_review")
 
+        update_job_status("qa_auto", "success", qa_result=qa_result)
         logger.info(f"=== ft_qa_auto DONE — total_flags={len(all_flags)}, must_fix={must_fix_count} ===")
 
     except Exception as e:

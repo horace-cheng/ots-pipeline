@@ -213,6 +213,7 @@ def notify_delivery():
 def run():
     logger.info(f"=== ft_deliver START — order: {cfg.ORDER_ID} ===")
     update_job_status("format_deliver", "running")
+    update_order_field("status", "processing")
 
     try:
         translations = read_temp_json("translations.json")
@@ -247,15 +248,16 @@ def run():
         if qa_result and qa_result.get("layer4_llm_judge"):
             llm_score = qa_result["layer4_llm_judge"].get("score")
 
-        qa_passed = llm_score is None or llm_score >= cfg.LLM_JUDGE_MIN_SCORE
+        must_fix_count = qa_result.get("must_fix_count", 0) if qa_result else 0
+        qa_passed = (llm_score is None or llm_score >= cfg.LLM_JUDGE_MIN_SCORE) and must_fix_count == 0
 
         if qa_passed:
             final_status = "delivered"
         else:
             final_status = "qa_review"
+            reason = f"score {llm_score:.1f} < {cfg.LLM_JUDGE_MIN_SCORE}" if (llm_score and llm_score < cfg.LLM_JUDGE_MIN_SCORE) else f"{must_fix_count} must_fix flags"
             logger.warning(
-                f"QA score {llm_score:.1f} < threshold {cfg.LLM_JUDGE_MIN_SCORE} "
-                f"— setting order to qa_review instead of delivered"
+                f"QA failed ({reason}) — setting order to qa_review instead of delivered"
             )
 
         from sqlalchemy import text as sqla_text

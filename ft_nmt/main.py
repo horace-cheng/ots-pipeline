@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config     import cfg
-from shared.db         import update_job_status, get_order_info
+from shared.db         import update_job_status, get_order_info, update_order_field
 from shared.storage    import read_temp_json, write_temp_json
 from shared.gemini     import translate
 from shared.terminology import get_terms
@@ -136,6 +136,7 @@ def translate_batch(segments: list[dict], prompt_template: str,
 def run():
     logger.info(f"=== ft_nmt START — order: {cfg.ORDER_ID} ===")
     update_job_status("nmt", "running")
+    update_order_field("status", "processing")
 
     try:
         segments = read_temp_json("segments.json")
