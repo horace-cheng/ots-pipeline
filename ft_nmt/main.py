@@ -114,12 +114,13 @@ def translate_batch(segments: list[dict], prompt_template: str,
         parts = re.split(r"\[PARA_SEP\]|\[\d+\]", response)
         parts = [p.strip() for p in parts if p.strip()]
 
-        # LLM often ignores markers and returns paragraphs separated by \n\n
         if len(parts) < len(batch):
             fallback = [p.strip() for p in re.split(r"\n{2,}", response) if p.strip()]
             if len(fallback) >= len(parts):
                 parts = fallback
                 logger.info(f"Batch {i//batch_size + 1}: used \\n\\n fallback split, got {len(parts)} parts")
+            else:
+                logger.warning(f"Batch {i//batch_size + 1}: LLM response parsing failed. Response: {response}")
 
         for k, part in enumerate(parts[:len(batch)]):
             results[i + k] = part

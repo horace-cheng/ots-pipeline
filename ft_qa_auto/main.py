@@ -37,8 +37,14 @@ def layer1_structure(segments: list[dict], translations: list[dict],
 
     # 定義語言對的長度比例區間
     ratio_ranges = {
+        # Taiwanese (Han/Tailo) -> ZH_TW
         ("tai-lo", "zh-tw"):   (cfg.LENGTH_RATIO_MIN_TAI_ZH, cfg.LENGTH_RATIO_MAX_TAI_ZH),
         ("hakka",  "zh-tw"):   (cfg.LENGTH_RATIO_MIN_TAI_ZH, cfg.LENGTH_RATIO_MAX_TAI_ZH),
+        # Taiwanese -> Foreign
+        ("tai-lo", "en"):      (cfg.LENGTH_RATIO_MIN_TAI_EN, cfg.LENGTH_RATIO_MAX_TAI_EN),
+        ("tai-lo", "ja"):      (cfg.LENGTH_RATIO_MIN_TAI_JA, cfg.LENGTH_RATIO_MAX_TAI_JA),
+        ("tai-lo", "ko"):      (0.5, 1.0),
+        # ZH_TW -> Foreign (some pipelines might use ZH_TW as intermediate)
         ("zh-tw",  "en"):      (cfg.LENGTH_RATIO_MIN_TAI_EN, cfg.LENGTH_RATIO_MAX_TAI_EN),
         ("zh-tw",  "ja"):      (cfg.LENGTH_RATIO_MIN_TAI_JA, cfg.LENGTH_RATIO_MAX_TAI_JA),
         ("zh-tw",  "ko"):      (0.5, 1.0),
@@ -68,12 +74,24 @@ def layer1_structure(segments: list[dict], translations: list[dict],
         total_src_len += src_len
         total_tgt_len += tgt_len
 
-        # 漏譯偵測
+        # 漏譯偵測（空翻譯）
         if src_len > 20 and tgt_len < 5:
             flags.append({
                 "paragraph_index": idx,
                 "flag_level":      "must_fix",
                 "flag_type":       "missing_segment",
+                "source_segment":  src_text,
+                "translated_segment": tgt_text,
+            })
+            flag_count += 1
+            continue
+
+        # 偵測未翻譯（原文與譯文相同，且長度足夠）
+        if src_len > 20 and src_text.strip() == tgt_text.strip():
+            flags.append({
+                "paragraph_index": idx,
+                "flag_level":      "must_fix",
+                "flag_type":       "untranslated",
                 "source_segment":  src_text,
                 "translated_segment": tgt_text,
             })
