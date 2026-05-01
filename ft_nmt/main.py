@@ -162,10 +162,12 @@ def run():
                 "index":      seg["index"],
                 "source":     seg["text"],
                 "translated": tgt_trans,
+                "comments":   "", # Initialize empty comments
             }
             for seg, tgt_trans in zip(segments, target_translations)
         ]
-        write_temp_json("translations.json", translations)
+        write_temp_json("translations_raw.json", translations)
+        write_temp_json("translations.json",     translations)
 
         update_job_status("nmt", "success")
         logger.info(f"=== ft_nmt DONE — {len(translations)} segments translated ===")
