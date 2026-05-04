@@ -98,6 +98,28 @@ def layer1_structure(segments: list[dict], translations: list[dict],
             flag_count += 1
             continue
 
+        # 偵測部分未翻譯（原文中的漢字在譯文中大量殘留）
+        # 當來源是台語/客語漢字而目標是英文/日文/韓文時，譯文中不應該出現大量原文漢字
+        if src_len > 50 and target_lang in ("en", "ja", "ko"):
+            cjk_pattern = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
+            src_cjk = cjk_pattern.findall(src_text)
+            tgt_cjk = cjk_pattern.findall(tgt_text)
+            if src_cjk:
+                tgt_cjk_set = set(tgt_cjk)
+                # 計算有多少原始漢字仍然出現在譯文中
+                remaining_count = sum(1 for c in src_cjk if c in tgt_cjk_set)
+                overlap_ratio = remaining_count / len(src_cjk)
+                if overlap_ratio > 0.5:
+                    flags.append({
+                        "paragraph_index": idx,
+                        "flag_level":      "must_fix",
+                        "flag_type":       "partial_untranslated",
+                        "source_segment":  src_text,
+                        "translated_segment": tgt_text,
+                    })
+                    flag_count += 1
+                    continue
+
         # 長度比例檢查（只在段落 > 50 字時才檢查）
         if src_len >= 50:
             ratio = tgt_len / src_len if src_len > 0 else 0
