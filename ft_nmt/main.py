@@ -94,6 +94,89 @@ def build_term_injection(terms: dict, target_lang: str) -> str:
     return "\n".join(lines)
 
 
+def _cjk_overlap(src: str, tgt: str) -> float:
+    """Return the ratio of source CJK chars that also appear in target."""
+    cjk = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
+    src_cjk = cjk.findall(src)
+    if not src_cjk:
+        return 0.0
+    tgt_set = set(cjk.findall(tgt))
+    return sum(1 for c in src_cjk if c in tgt_set) / len(src_cjk)
+
+
+RETRY_PROMPTS = {
+    "en": """CRITICAL: The previous attempt failed to translate the text properly — it still contains Chinese characters instead of English.
+
+Please translate the following Taiwanese text to natural, readable English again.
+You MUST translate EVERYTHING to English. Do NOT leave any Chinese characters in the output.
+
+Rules:
+1. Output ONLY the translation, no explanations
+2. Do NOT keep original Chinese characters (romanization in parentheses is OK)
+3. Preserve paragraph structure exactly
+
+Source (Taiwanese):
+{source_text}
+
+English translation:""",
+
+    "ja": """重要：前回の翻訳は失敗しました。出力に漢字が残っています。日本語に完全に翻訳してください。
+
+規則：
+1. 翻訳結果のみを出力、説明不要
+2. 原文の漢字を残さない（括弧内のローマ字は可）
+3. 段落構造を完全に保持
+
+原文（台湾語）：
+{source_text}
+
+日本語翻訳：""",
+
+    "ko": """중요: 이전 번역이 실패했습니다. 원문 한자가 출력에 남아 있습니다. 한국어로 완전히 번역하세요.
+
+규칙:
+1. 번역 결과만 출력, 설명 불필요
+2. 원문 한자를 남기지 말 것（괄호 안 로마자 표기는 허용）
+3. 단락 구조를 완전히 유지
+
+원문（대만어）：
+{source_text}
+
+한국어 번역：""",
+}
+
+
+def translate_single(
+    source_text: str,
+    prompt_template: str,
+    term_inj: str,
+    target_lang: str,
+    max_retries: int = 2,
+) -> str:
+    """Translate one segment with retry if partial_untranslated detected."""
+    prompt = prompt_template.format(source_text=source_text, term_injection=term_inj)
+
+    for attempt in range(max_retries + 1):
+        response = translate(prompt)
+
+        parts = re.split(r"\[PARA_SEP\]|\[\d+\]", response)
+        parts = [p.strip() for p in parts if p.strip()]
+        result = parts[0] if parts else response.strip()
+
+        if attempt < max_retries and len(source_text) > 50:
+            overlap = _cjk_overlap(source_text, result)
+            if overlap > 0.5:
+                logger.warning(
+                    f"Segment partial untranslated (overlap={overlap:.0%}), retrying {attempt + 1}/{max_retries}"
+                )
+                prompt = RETRY_PROMPTS[target_lang].format(source_text=source_text)
+                continue
+
+        return result
+
+    return result
+
+
 def translate_batch(segments: list[dict], prompt_template: str,
                     terms: dict, target_lang: str,
                     batch_size: int = 5) -> list[str]:
