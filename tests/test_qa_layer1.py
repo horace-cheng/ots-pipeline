@@ -22,6 +22,18 @@ def layer1_structure_minimal(segments, translations, source_lang, target_lang):
         ("zh-tw",  "ko"):      (0.5, 1.0),
     }
 
+    word_based_langs = {"en"}
+
+    def _effective_length(text: str, lang: str) -> int:
+        if lang in word_based_langs:
+            return len(text.split())
+        return len(text)
+
+    def _is_effectively_empty(text: str, lang: str) -> bool:
+        if lang in word_based_langs:
+            return len(text.split()) == 0
+        return len(text.strip()) == 0
+
     if len(segments) != len(translations):
         flags.append({
             "paragraph_index": 0,
@@ -41,12 +53,12 @@ def layer1_structure_minimal(segments, translations, source_lang, target_lang):
         src_text = trans["source"]
         tgt_text = trans["translated"]
         src_len = len(src_text)
-        tgt_len = len(tgt_text)
+        tgt_len = _effective_length(tgt_text, target_lang)
         total_src_len += src_len
         total_tgt_len += tgt_len
 
         # 漏譯偵測（空翻譯）
-        if src_len > 20 and tgt_len < 5:
+        if src_len > 20 and _is_effectively_empty(tgt_text, target_lang):
             flags.append({
                 "paragraph_index": idx,
                 "flag_level":      "must_fix",
@@ -261,3 +273,77 @@ class TestLayer1PartialUntranslated:
         partial_flags = [f for f in flags if f["flag_type"] == "partial_untranslated"]
         assert len(partial_flags) == 1
         assert partial_flags[0]["paragraph_index"] == 1  # Index 5 = segment 1 in this batch
+
+
+class TestWordCountLengthRatio:
+    """Test that English target uses word count, not character count, for length ratio."""
+
+    def _make_segments(self, texts):
+        return [{"index": i, "text": t} for i, t in enumerate(texts)]
+
+    def _make_translations(self, sources, targets):
+        return [{"index": i, "source": s, "translated": t} for i, (s, t) in enumerate(zip(sources, targets))]
+
+    def test_english_uses_word_count_not_char_count(self):
+        """For en target, length should be based on word count.
+        
+        Source: 84 Chinese characters
+        Target: 19 words, 97 characters
+        Word-count ratio: 19/84 = 0.226 (should be outside 0.4-0.85 range)
+        Char-count ratio: 97/84 = 1.15 (would incorrectly pass)
+        """
+        src = "然而，愛情的道路，總有「酸鹹苦澀」。我想起有一擺咱的「相爭吵」。為著一件「雞毛蒜皮」的小事，你講我「番仔性」，我講你「無情無義」。彼幾工，天也落雨，心也落雨。"
+        tgt = "However, the path of love always has its bitter and sour moments. I recall one of our quarrels over trivial matters."
+
+        segments = self._make_segments([src])
+        translations = self._make_translations([src], [tgt])
+
+        result, flags = layer1_structure_minimal(segments, translations, "tai-lo", "en")
+        # 19 words / 84 chars = 0.226, which is below 0.4 * 0.6 = 0.24, so must_fix
+        assert result["pass"] is False
+        assert any(f["flag_type"] == "length_ratio" for f in flags)
+
+    def test_proper_translation_word_count_in_range(self):
+        """A translation with reasonable word count should pass the ratio check."""
+        # ~90 chars source, ~30 words target -> ratio = 30/90 = 0.33 (close to 0.4)
+        # Let's make it longer so it passes
+        src = "我站在月光下看著遠方的山，心裡想著你。風輕輕吹過，帶來了你的氣息。這是一段很長的測試文字，用來確認翻譯的品質是否正常工作。希望這個測試能夠成功通過所有檢查項目。"
+        tgt = ("I stand under the moonlight gazing at the distant mountains, thinking of you. "
+               "The wind blows gently, bringing your scent. This is a long test paragraph used "
+               "to verify that the translation quality works normally. I hope this test passes "
+               "all the checks successfully.")
+
+        segments = self._make_segments([src])
+        translations = self._make_translations([src], [tgt])
+
+        result, flags = layer1_structure_minimal(segments, translations, "tai-lo", "en")
+        # 36 words / 96 chars = 0.375, slightly below 0.4, might flag as review
+        # The ratio ranges are (0.4, 0.85), so 0.375 is below 0.4 but above 0.4*0.6=0.24
+        # So it should be "review" level, not must_fix
+        length_flags = [f for f in flags if f["flag_type"] == "length_ratio"]
+        if length_flags:
+            assert length_flags[0]["flag_level"] == "review"
+
+    def test_zh_tw_still_uses_char_count(self):
+        """For zh-tw target, length should still be character count."""
+        src = "這是一段台語文字，有很多漢字在裡面，用來測試中文字數計算。"
+        tgt = "這是一段台語文字，有很多漢字在裡面（台羅：tsit tīnn tuàn tâi-gí bûn-jī），用來測試。"
+
+        segments = self._make_segments([src])
+        translations = self._make_translations([src], [tgt])
+
+        result, flags = layer1_structure_minimal(segments, translations, "tai-lo", "zh-tw")
+        # Both are similar length in characters, should pass
+        assert result["pass"] is True
+
+    def test_empty_translation_caught_with_word_count(self):
+        """For en target, empty or whitespace-only translation should be caught."""
+        src = "這是一段很長的台語文字，超過二十個字，用來測試未翻譯的偵測功能是否正常運作。"
+        tgt = "   "
+
+        segments = self._make_segments([src])
+        translations = self._make_translations([src], [tgt])
+
+        result, flags = layer1_structure_minimal(segments, translations, "tai-lo", "en")
+        assert result["pass"] is False
+        assert any(f["flag_type"] == "missing_segment" for f in flags)

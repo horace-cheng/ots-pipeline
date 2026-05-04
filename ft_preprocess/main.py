@@ -11,8 +11,9 @@ Fast Track Step 1: Pre-process
 - 更新 pipeline_jobs 狀態
 """
 
-import sys, re, unicodedata, logging
+import sys, re, unicodedata, logging, zipfile, io
 from pathlib import Path
+from xml.etree import ElementTree
 
 # 將 shared 目錄加入 Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -48,12 +49,55 @@ def detect_script(text: str) -> str:
         return "mixed"       # 混合
 
 
-def normalize_text(raw: bytes) -> str:
-    """UTF-8 正規化，移除 BOM、正規化換行"""
+def _extract_text_from_docx(raw: bytes) -> str:
+    """Extract text from a .docx file (ZIP archive of XMLs)."""
     try:
-        text = raw.decode("utf-8-sig")  # 處理 BOM
-    except UnicodeDecodeError:
-        text = raw.decode("big5", errors="replace")
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            doc_xml = zf.read("word/document.xml")
+            root = ElementTree.fromstring(doc_xml)
+    except (zipfile.BadZipFile, KeyError) as e:
+        logger.warning(f"Not a valid .docx file: {e}")
+        return None
+
+    # Extract text from all <w:t> elements, join paragraphs by <w:p> boundaries
+    paragraphs = []
+    current_text = []
+    for elem in root.iter():
+        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+        if tag == "p":
+            text = "".join(current_text)
+            if text.strip():
+                paragraphs.append(text.strip())
+            current_text = []
+        elif tag == "t" and elem.text:
+            current_text.append(elem.text)
+    # Don't forget last paragraph
+    text = "".join(current_text)
+    if text.strip():
+        paragraphs.append(text.strip())
+
+    return "\n\n".join(paragraphs)
+
+
+def normalize_text(raw: bytes) -> str:
+    """UTF-8 正規化，支援 .docx 文件提取文字。"""
+    # 嘗試作為 .docx 提取文字（ZIP 檔案以 PK\x03\x04 開頭）
+    if raw[:4] == b"PK\x03\x04":
+        docx_text = _extract_text_from_docx(raw)
+        if docx_text is not None:
+            logger.info("Detected .docx file, extracted text via ZIP/XML")
+            text = docx_text
+        else:
+            logger.info("Not a valid .docx, falling back to plain text decode")
+            try:
+                text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                text = raw.decode("big5", errors="replace")
+    else:
+        try:
+            text = raw.decode("utf-8-sig")  # 處理 BOM
+        except UnicodeDecodeError:
+            text = raw.decode("big5", errors="replace")
 
     # 正規化 Unicode（NFC）
     text = unicodedata.normalize("NFC", text)

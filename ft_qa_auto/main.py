@@ -36,6 +36,7 @@ def layer1_structure(segments: list[dict], translations: list[dict],
     flags = []
 
     # 定義語言對的長度比例區間
+    # 當目標語言是英文時，target_len 用字數（word count）而非字元數
     ratio_ranges = {
         # Taiwanese (Han/Tailo) -> ZH_TW
         ("tai-lo", "zh-tw"):   (cfg.LENGTH_RATIO_MIN_TAI_ZH, cfg.LENGTH_RATIO_MAX_TAI_ZH),
@@ -50,6 +51,21 @@ def layer1_structure(segments: list[dict], translations: list[dict],
         ("zh-tw",  "ko"):      (0.5, 1.0),
     }
 
+    # 使用字數（word count）的語言列表
+    word_based_langs = {"en"}
+
+    def _effective_length(text: str, lang: str) -> int:
+        """CJK 語言用字元數，英文等用字數（word count）。"""
+        if lang in word_based_langs:
+            return len(text.split())
+        return len(text)
+
+    def _is_effectively_empty(text: str, lang: str) -> bool:
+        """判斷譯文是否「有效空白」"""
+        if lang in word_based_langs:
+            return len(text.split()) == 0
+        return len(text.strip()) == 0
+
     # 段落數檢查
     if len(segments) != len(translations):
         flags.append({
@@ -59,6 +75,7 @@ def layer1_structure(segments: list[dict], translations: list[dict],
             "source_segment":  f"Expected {len(segments)} segments, got {len(translations)}",
             "translated_segment": "",
         })
+        logger.warning(f"Layer 1 [segment mismatch]: expected {len(segments)}, got {len(translations)}")
 
     total_src_len  = 0
     total_tgt_len  = 0
@@ -70,12 +87,14 @@ def layer1_structure(segments: list[dict], translations: list[dict],
         src_text    = trans["source"]
         tgt_text    = trans["translated"]
         src_len     = len(src_text)
-        tgt_len     = len(tgt_text)
+        tgt_len     = _effective_length(tgt_text, target_lang)
+        tgt_char_len = len(tgt_text)
         total_src_len += src_len
         total_tgt_len += tgt_len
 
         # 漏譯偵測（空翻譯）
-        if src_len > 20 and tgt_len < 5:
+        if src_len > 20 and _is_effectively_empty(tgt_text, target_lang):
+            logger.warning(f"Layer 1 [seg #{idx+1}] FAIL missing_segment — src={src_len} chars, target empty")
             flags.append({
                 "paragraph_index": idx,
                 "flag_level":      "must_fix",
@@ -88,6 +107,7 @@ def layer1_structure(segments: list[dict], translations: list[dict],
 
         # 偵測未翻譯（原文與譯文相同，且長度足夠）
         if src_len > 20 and src_text.strip() == tgt_text.strip():
+            logger.warning(f"Layer 1 [seg #{idx+1}] FAIL untranslated — source and target identical")
             flags.append({
                 "paragraph_index": idx,
                 "flag_level":      "must_fix",
@@ -99,7 +119,6 @@ def layer1_structure(segments: list[dict], translations: list[dict],
             continue
 
         # 偵測部分未翻譯（原文中的漢字在譯文中大量殘留）
-        # 當來源是台語/客語漢字而目標是英文/日文/韓文時，譯文中不應該出現大量原文漢字
         if src_len > 50 and target_lang in ("en", "ja", "ko"):
             cjk_pattern = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
             src_cjk = cjk_pattern.findall(src_text)
@@ -110,6 +129,10 @@ def layer1_structure(segments: list[dict], translations: list[dict],
                 remaining_count = sum(1 for c in src_cjk if c in tgt_cjk_set)
                 overlap_ratio = remaining_count / len(src_cjk)
                 if overlap_ratio > 0.5:
+                    logger.warning(
+                        f"Layer 1 [seg #{idx+1}] FAIL partial_untranslated — "
+                        f"CJK overlap {overlap_ratio:.0%} ({remaining_count}/{len(src_cjk)} chars retained)"
+                    )
                     flags.append({
                         "paragraph_index": idx,
                         "flag_level":      "must_fix",
@@ -128,6 +151,11 @@ def layer1_structure(segments: list[dict], translations: list[dict],
                 min_r, max_r = ratio_ranges[range_key]
                 if not (min_r <= ratio <= max_r):
                     level = "must_fix" if ratio < min_r * 0.6 or ratio > max_r * 1.5 else "review"
+                    label = f"{tgt_len} words" if target_lang in word_based_langs else f"{tgt_len} chars"
+                    logger.warning(
+                        f"Layer 1 [seg #{idx+1}] {level.upper()} length_ratio — "
+                        f"ratio={ratio:.3f} ({label} / {src_len} chars), range=[{min_r}, {max_r}]"
+                    )
                     flags.append({
                         "paragraph_index": idx,
                         "flag_level":      level,
@@ -137,7 +165,12 @@ def layer1_structure(segments: list[dict], translations: list[dict],
                     })
                     flag_count += 1
                     continue
+            else:
+                logger.debug(f"Layer 1 [seg #{idx+1}] no ratio range for {range_key}")
+        else:
+            logger.debug(f"Layer 1 [seg #{idx+1}] PASS (short segment: {src_len} chars)")
 
+        logger.info(f"Layer 1 [seg #{idx+1}] PASS — src={src_len} chars, tgt={tgt_len} {'words' if target_lang in word_based_langs else 'chars'}")
         pass_count += 1
 
     overall_ratio = total_tgt_len / total_src_len if total_src_len > 0 else 0
@@ -172,6 +205,8 @@ def layer2_semantic(translations: list[dict]) -> tuple[dict, list[dict]]:
     import random
     sample = random.sample(long_paras, sample_size) if len(long_paras) > sample_size else long_paras
 
+    logger.info(f"Layer 2: sampling {sample_size}/{len(long_paras)} long paragraphs (>{100} chars) out of {len(translations)} total")
+
     for trans in sample:
         idx      = trans["index"]
         src_text = trans["source"]
@@ -196,6 +231,10 @@ Translation: {tgt_text[:300]}"""
             total_scored += 1
 
             if score < 50:
+                logger.warning(
+                    f"Layer 2 [seg #{idx+1}] MUST_FIX semantic_drift — score={score:.0f}/100"
+                    f"{', issue: ' + issue if issue else ''}"
+                )
                 flags.append({
                     "paragraph_index": idx,
                     "flag_level":      "must_fix",
@@ -205,6 +244,10 @@ Translation: {tgt_text[:300]}"""
                 })
                 flag_count += 1
             elif score < 65:
+                logger.warning(
+                    f"Layer 2 [seg #{idx+1}] REVIEW semantic_drift — score={score:.0f}/100"
+                    f"{', issue: ' + issue if issue else ''}"
+                )
                 flags.append({
                     "paragraph_index": idx,
                     "flag_level":      "review",
@@ -214,6 +257,7 @@ Translation: {tgt_text[:300]}"""
                 })
                 flag_count += 1
             else:
+                logger.info(f"Layer 2 [seg #{idx+1}] PASS semantic — score={score:.0f}/100")
                 pass_count += 1
 
         except Exception as e:
@@ -238,11 +282,20 @@ def layer3_terminology(translations: list[dict]) -> tuple[dict, list[dict]]:
         logger.info("Layer 3: no terminology dict, skipping")
         return {"pass": True, "flags": 0, "terms_checked": 0}, []
 
+    logger.info(f"Layer 3: checking {len(terms)} terms across {len(translations)} segments")
+
     para_list = [
         {"index": t["index"], "source": t["source"], "translated": t["translated"]}
         for t in translations
     ]
     flags = scan_terminology_inconsistencies(para_list, terms)
+
+    for f in flags:
+        logger.warning(
+            f"Layer 3 [seg #{f['paragraph_index']+1}] {f['flag_level'].upper()} terminology_mismatch — "
+            f"source term mismatch in segment"
+        )
+
     result = {
         "pass":          len(flags) == 0,
         "flags":         len(flags),
@@ -293,13 +346,20 @@ Segments to evaluate:
                 all_scores.append(score)
 
                 if score < cfg.LLM_JUDGE_MIN_SCORE:
+                    level = "must_fix" if score < 40 else "review"
+                    logger.warning(
+                        f"Layer 4 [seg #{trans['index']+1}] {level.upper()} readability_low — "
+                        f"score={score:.0f}/100{', note: ' + note if note else ''}"
+                    )
                     flags.append({
                         "paragraph_index": trans["index"],
-                        "flag_level":      "must_fix" if score < 40 else "review",
+                        "flag_level":      level,
                         "flag_type":       "readability_low",
                         "source_segment":  trans["source"],
                         "translated_segment": trans["translated"],
                     })
+                else:
+                    logger.info(f"Layer 4 [seg #{trans['index']+1}] PASS readability — score={score:.0f}/100")
 
         except Exception as e:
             logger.warning(f"Layer 4 batch {i//batch_size} failed: {e}")
@@ -351,6 +411,22 @@ def run():
         write_qa_flags(all_flags)
 
         must_fix_count = sum(1 for f in all_flags if f["flag_level"] == "must_fix")
+
+        # Per-segment summary
+        seg_flags = {}
+        for f in all_flags:
+            idx = f["paragraph_index"]
+            if idx not in seg_flags:
+                seg_flags[idx] = []
+            seg_flags[idx].append(f)
+
+        if seg_flags:
+            logger.info("=== QA Summary by Segment ===")
+            for idx in sorted(seg_flags.keys()):
+                f_list = seg_flags[idx]
+                types = ", ".join(f"{f['flag_type']}({f['flag_level']})" for f in f_list)
+                logger.info(f"  Seg #{idx+1}: {types}")
+
         qa_result = {
             "layer1_structure":   l1_result,
             "layer2_semantic":    l2_result,
