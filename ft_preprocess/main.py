@@ -79,10 +79,46 @@ def _extract_text_from_docx(raw: bytes) -> str:
     return "\n\n".join(paragraphs)
 
 
+def _extract_text_from_pdf(raw: bytes) -> str:
+    """Extract text from a PDF file using pypdf."""
+    from pypdf import PdfReader
+    try:
+        reader = PdfReader(io.BytesIO(raw))
+    except Exception as e:
+        logger.warning(f"Failed to parse PDF: {e}")
+        return None
+
+    texts = []
+    for i, page in enumerate(reader.pages):
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            texts.append(page_text.strip())
+
+    result = "\n\n".join(texts)
+    # Check if extraction produced meaningful content
+    if not result or len(result.strip()) < 10:
+        logger.warning("PDF text extraction returned empty or minimal content (possibly scanned image)")
+        return None
+
+    return result
+
+
 def normalize_text(raw: bytes) -> str:
-    """UTF-8 正規化，支援 .docx 文件提取文字。"""
-    # 嘗試作為 .docx 提取文字（ZIP 檔案以 PK\x03\x04 開頭）
-    if raw[:4] == b"PK\x03\x04":
+    """UTF-8 正規化，支援 .docx、PDF 文件提取文字。"""
+    # PDF 檔案以 %PDF 開頭
+    if raw[:4] == b"%PDF":
+        pdf_text = _extract_text_from_pdf(raw)
+        if pdf_text is not None:
+            logger.info("Detected PDF file, extracted text via pypdf")
+            text = pdf_text
+        else:
+            logger.warning("PDF text extraction failed, falling back to raw decode")
+            try:
+                text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                text = raw.decode("big5", errors="replace")
+    # .docx 檔案是 ZIP 格式，以 PK\x03\x04 開頭
+    elif raw[:4] == b"PK\x03\x04":
         docx_text = _extract_text_from_docx(raw)
         if docx_text is not None:
             logger.info("Detected .docx file, extracted text via ZIP/XML")
