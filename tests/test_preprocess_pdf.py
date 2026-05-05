@@ -1,6 +1,7 @@
 """Tests for PDF text extraction in ft_preprocess."""
 
 import io
+import re
 import pytest
 
 
@@ -12,13 +13,41 @@ def _extract_text_from_pdf(raw: bytes) -> str:
     except Exception:
         return None
 
-    texts = []
+    pages_text = []
     for page in reader.pages:
         page_text = page.extract_text() or ""
-        if page_text.strip():
-            texts.append(page_text.strip())
+        if not page_text.strip():
+            continue
 
-    result = "\n\n".join(texts)
+        lines = page_text.split("\n")
+        paragraphs = []
+        current = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                if current:
+                    paragraphs.append("".join(current))
+                    current = []
+                continue
+
+            current.append(stripped)
+
+            if stripped[-1:] in '。！？…．.!?':
+                trailing = len(line.rstrip())
+                full = len(line)
+                if trailing < full:
+                    paragraphs.append("".join(current))
+                    current = []
+
+        if current:
+            paragraphs.append("".join(current))
+
+        joined = "\n\n".join(p for p in paragraphs if p.strip())
+        if joined:
+            pages_text.append(joined)
+
+    result = "\n\n".join(pages_text)
     if not result or len(result.strip()) < 10:
         return None
     return result

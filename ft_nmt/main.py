@@ -183,6 +183,14 @@ def translate_batch(segments: list[dict], prompt_template: str,
     results = [""] * len(segments)
     term_inj = build_term_injection(terms, target_lang)
 
+    # Patterns that indicate LLM preamble text (not actual translation)
+    PREAMBLE_RE = re.compile(
+        r'^(here are|following|below|sure|certainly|of course|'
+        r'here is|here\'s|below is|the following|'
+        r'以下是|好的|當然|翻譯如下)',
+        re.IGNORECASE
+    )
+
     for i in range(0, len(segments), batch_size):
         batch = segments[i:i + batch_size]
 
@@ -197,17 +205,59 @@ def translate_batch(segments: list[dict], prompt_template: str,
 
         response = translate(prompt)
 
-        parts = re.split(r"\[PARA_SEP\]|\[\d+\]", response)
-        parts = [p.strip() for p in parts if p.strip()]
+        # ── Primary parse: numbered markers [1] [2] ... ──
+        # Extract translations by numbered markers — most reliable
+        numbered_parts = re.findall(r"\[(\d+)\]\s*(.*?)(?=\[\d+\]|$)", response, re.DOTALL)
+        if numbered_parts and len(numbered_parts) == len(batch):
+            parts = [p.strip() for _, p in numbered_parts]
+        else:
+            # Strip preamble before [1] if present
+            first_marker = re.search(r"\n?\[1\]", response)
+            clean_response = response[first_marker.end():] if first_marker else response
 
-        if len(parts) < len(batch):
-            fallback = [p.strip() for p in re.split(r"\n{2,}", response) if p.strip()]
-            if len(fallback) >= len(parts):
-                parts = fallback
+            # Split on [PARA_SEP] or numbered markers
+            parts = re.split(r"\[PARA_SEP\]|\[\d+\]", clean_response)
+            parts = [p.strip() for p in parts if p.strip()]
+
+        # ── Handle part count mismatch ──
+        if len(parts) > len(batch):
+            # LLM produced extra paragraphs (e.g. split title from body)
+            # Merge short first part into second (title+body case)
+            if len(parts[0]) < len(parts[1]) * 0.3 and not parts[0].rstrip().endswith("."):
+                parts[0] = parts[0] + " " + parts[1]
+                parts.pop(1)
+                logger.info(f"Batch {i//batch_size + 1}: merged title-like first part")
+
+            # If still too many, merge extras into the last part
+            while len(parts) > len(batch):
+                parts[-2] = parts[-2] + " " + parts.pop(-1)
+                logger.info(f"Batch {i//batch_size + 1}: merged excess part into last segment")
+
+        elif len(parts) < len(batch):
+            # Fallback: split on double newlines
+            first_marker = re.search(r"\n?\[1\]", response)
+            clean_response = response[first_marker.end():] if first_marker else response
+            fallback = [p.strip() for p in re.split(r"\n{2,}", clean_response) if p.strip()]
+
+            # Drop preamble lines
+            while fallback and PREAMBLE_RE.match(fallback[0]):
+                fallback.pop(0)
+
+            # Handle extra paragraphs in fallback too
+            if len(fallback) > len(batch):
+                if len(fallback[0]) < len(fallback[1]) * 0.3 and not fallback[0].rstrip().endswith("."):
+                    fallback[0] = fallback[0] + " " + fallback[1]
+                    fallback.pop(1)
+                while len(fallback) > len(batch):
+                    fallback[-2] = fallback[-2] + " " + fallback.pop(-1)
+
+            if len(fallback) >= len(batch):
+                parts = fallback[:len(batch)]
                 logger.info(f"Batch {i//batch_size + 1}: used \\n\\n fallback split, got {len(parts)} parts")
             else:
-                logger.warning(f"Batch {i//batch_size + 1}: LLM response parsing failed. Response: {response}")
+                logger.warning(f"Batch {i//batch_size + 1}: LLM response parsing issue. Got {len(parts)}/{len(batch)} parts. Response: {response[:200]}")
 
+        # ── Assign to results ──
         for k, part in enumerate(parts[:len(batch)]):
             results[i + k] = part
 

@@ -80,7 +80,13 @@ def _extract_text_from_docx(raw: bytes) -> str:
 
 
 def _extract_text_from_pdf(raw: bytes) -> str:
-    """Extract text from a PDF file using pypdf."""
+    """Extract text from a PDF file using pypdf, reconstructing proper paragraph breaks.
+
+    PDFs often have line-wrap newlines within paragraphs. We detect paragraph boundaries by:
+    - Empty lines (definitive paragraph break)
+    - Lines ending with sentence-ending punctuation + trailing whitespace (PDF paragraph-end marker)
+    - Lines that end mid-sentence are joined with the next line
+    """
     from pypdf import PdfReader
     try:
         reader = PdfReader(io.BytesIO(raw))
@@ -88,14 +94,43 @@ def _extract_text_from_pdf(raw: bytes) -> str:
         logger.warning(f"Failed to parse PDF: {e}")
         return None
 
-    texts = []
+    pages_text = []
     for i, page in enumerate(reader.pages):
         page_text = page.extract_text() or ""
-        if page_text.strip():
-            texts.append(page_text.strip())
+        if not page_text.strip():
+            continue
 
-    result = "\n\n".join(texts)
-    # Check if extraction produced meaningful content
+        lines = page_text.split("\n")
+        paragraphs = []
+        current = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                # Empty line = definitive paragraph break
+                if current:
+                    paragraphs.append("".join(current))
+                    current = []
+                continue
+
+            current.append(stripped)
+
+            # Check if this line ends with sentence-ending punctuation + trailing spaces
+            # (PDF convention for paragraph-ending lines)
+            if stripped[-1:] in '。！？…．!?\u2026' and len(line.rstrip()) < len(line):
+                # Has trailing whitespace after punctuation = paragraph end
+                paragraphs.append("".join(current))
+                current = []
+
+        # Flush remaining
+        if current:
+            paragraphs.append("".join(current))
+
+        joined = "\n\n".join(p for p in paragraphs if p.strip())
+        if joined:
+            pages_text.append(joined)
+
+    result = "\n\n".join(pages_text)
     if not result or len(result.strip()) < 10:
         logger.warning("PDF text extraction returned empty or minimal content (possibly scanned image)")
         return None
@@ -148,27 +183,47 @@ def split_paragraphs(text: str) -> list[str]:
     """
     段落分割策略：
     1. 空行分割（主要）
-    2. 若結果 < 3 段，改用句號/段落標記分割
-    3. 移除空段落，長度不足 10 字的段落合併到前一段
+    2. 若結果 < 2 段，改用句號分割（不丟棄任何文字）
+    3. 合併過短段落到前一段（不丟棄，永不刪除）
     """
     # 嘗試空行分割
     paragraphs = [p.strip() for p in re.split(r"\n{2,}", text)]
     paragraphs = [p for p in paragraphs if p]
 
-    if len(paragraphs) < 3:
-        # 用句號 + 換行分割
-        paragraphs = [p.strip() for p in re.split(r"[。\n]", text)]
-        paragraphs = [p for p in paragraphs if p and len(p) >= 10]
+    if len(paragraphs) < 2:
+        # 用句號分割（不換行，避免破壞 PDF 行內文字）
+        raw_splits = re.split(r"(?<=。)", text)
+        paragraphs = [p.strip() for p in raw_splits if p.strip()]
 
-    # 合併過短段落到前一段
+    # 合併過短段落到前一段（永不丟棄文字）
     merged = []
     for para in paragraphs:
         if merged and len(para) < 15:
-            merged[-1] += " " + para
+            merged[-1] += para
         else:
             merged.append(para)
 
-    return merged
+    # 最後確認：若仍有單一段落太大，按標點符號智慧切分
+    MAX_SEGMENT_CHARS = 500
+    final = []
+    for para in merged:
+        if len(para) <= MAX_SEGMENT_CHARS:
+            final.append(para)
+        else:
+            # 按句號切分並合併到合理大小
+            sentences = re.split(r"(?<=。)", para)
+            sentences = [s for s in sentences if s.strip()]
+            chunk = ""
+            for sent in sentences:
+                if len(chunk) + len(sent) > MAX_SEGMENT_CHARS and chunk:
+                    final.append(chunk)
+                    chunk = sent
+                else:
+                    chunk += sent
+            if chunk:
+                final.append(chunk)
+
+    return final
 
 
 def run():
