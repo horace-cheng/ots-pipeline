@@ -73,3 +73,20 @@ def write_output(filename: str, content: str, content_type: str = "text/plain") 
     full_path = f"gs://{cfg.BUCKET_OUTPUTS}/{gcs_path}"
     logger.info(f"Written output: {full_path}")
     return full_path
+
+
+def list_support_files() -> list[dict]:
+    """列出支援材料檔案（GCS uploads bucket 中的 support/{order_id}/ 目錄）"""
+    client = get_client()
+    bucket = client.bucket(cfg.BUCKET_UPLOADS)
+    prefix = f"support/{cfg.ORDER_ID}/"
+
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    return [
+        {
+            "name":         b.name,
+            "size":         b.size,
+            "content_type": b.content_type,
+        }
+        for b in blobs if not b.name.endswith("/")
+    ]

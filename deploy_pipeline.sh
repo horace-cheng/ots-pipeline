@@ -28,11 +28,17 @@ SQL_INSTANCE="${PROJECT_ID}:${REGION}:ots-db-${ENV}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Cloud Run Jobs 設定
+# Format: job_key:job_name:job_dir:tier  (tier=standard|large)
 JOBS=(
-  "preprocess:ots-ft-preprocess-${ENV}:ft_preprocess"
-  "nmt:ots-ft-nmt-${ENV}:ft_nmt"
-  "qa_auto:ots-ft-qa-auto-${ENV}:ft_qa_auto"
-  "deliver:ots-ft-deliver-${ENV}:ft_deliver"
+  # Fast Track (standard resources)
+  "preprocess:ots-ft-preprocess-${ENV}:ft_preprocess:standard"
+  "nmt:ots-ft-nmt-${ENV}:ft_nmt:standard"
+  "qa_auto:ots-ft-qa-auto-${ENV}:ft_qa_auto:standard"
+  "deliver:ots-ft-deliver-${ENV}:ft_deliver:standard"
+  # Literary Track (large resources for 10K+ word files)
+  "lt_preprocess_nmt:ots-lt-preprocess-nmt-${ENV}:lt_preprocess_nmt:large"
+  "lt_qa_checklist:ots-lt-qa-checklist-${ENV}:lt_qa_checklist:standard"
+  "lt_deliver:ots-lt-deliver-${ENV}:lt_deliver:standard"
 )
 
 echo ""
@@ -53,7 +59,7 @@ ok "Vertex AI 權限確認完成"
 
 # ── 建置並部署每個 Job ────────────────────────────────────────────────────────
 for job_spec in "${JOBS[@]}"; do
-  IFS=':' read -r job_key job_name job_dir <<< "$job_spec"
+  IFS=':' read -r job_key job_name job_dir job_tier <<< "$job_spec"
 
   log "Building image for ${job_name}..."
   IMAGE="${REGISTRY}/${job_name}:latest"
@@ -96,10 +102,21 @@ CLOUDBUILD
   COMMON_ENV+=",GCS_OUTPUTS_BUCKET=${PROJECT_ID}-outputs-${ENV}"
   COMMON_ENV+=",GCS_TEMP_BUCKET=${PROJECT_ID}-pipeline-temp-${ENV}"
 
+  # 根據 tier 設定資源
+  if [[ "$job_tier" == "large" ]]; then
+    MEMORY="4Gi"
+    CPU="2"
+    TIMEOUT=3600
+  else
+    MEMORY="1Gi"
+    CPU="1"
+    TIMEOUT=1800
+  fi
+
   # 建立或更新 Cloud Run Job
   if gcloud run jobs describe "$job_name" \
        --region="$REGION" --project="$PROJECT_ID" --quiet &>/dev/null; then
-    log "Updating existing Job: ${job_name}..."
+    log "Updating existing Job: ${job_name} (tier=${job_tier}, mem=${MEMORY}, cpu=${CPU}, timeout=${TIMEOUT}s)..."
     gcloud run jobs update "$job_name" \
       --image="$IMAGE" \
       --region="$REGION" \
@@ -112,12 +129,12 @@ CLOUDBUILD
       --set-secrets="DB_URL=ots-db-url-${ENV}:latest,GOOGLE_AI_API_KEY=ots-google-ai-key:latest" \
       --set-env-vars="$COMMON_ENV" \
       --max-retries=2 \
-      --task-timeout=1800 \
-      --memory=1Gi \
-      --cpu=1 \
+      --task-timeout="$TIMEOUT" \
+      --memory="$MEMORY" \
+      --cpu="$CPU" \
       --quiet
   else
-    log "Creating new Job: ${job_name}..."
+    log "Creating new Job: ${job_name} (tier=${job_tier}, mem=${MEMORY}, cpu=${CPU}, timeout=${TIMEOUT}s)..."
     gcloud run jobs create "$job_name" \
       --image="$IMAGE" \
       --region="$REGION" \
@@ -130,9 +147,9 @@ CLOUDBUILD
       --set-secrets="DB_URL=ots-db-url-${ENV}:latest,GOOGLE_AI_API_KEY=ots-google-ai-key:latest" \
       --set-env-vars="$COMMON_ENV" \
       --max-retries=2 \
-      --task-timeout=1800 \
-      --memory=1Gi \
-      --cpu=1 \
+      --task-timeout="$TIMEOUT" \
+      --memory="$MEMORY" \
+      --cpu="$CPU" \
       --quiet
   fi
 

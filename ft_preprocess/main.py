@@ -268,6 +268,7 @@ def run():
             "order_id":    cfg.ORDER_ID,
             "source_lang": source_lang,
             "target_lang": target_lang,
+            "track_type":  order.get("track_type", "fast"),
             "script":      script,
             "total_chars": len(text),
             "para_count":  len(paragraphs),
