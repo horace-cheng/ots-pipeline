@@ -1,17 +1,19 @@
 """
 lt_qa_checklist/main.py — Cloud Run Job
 
-Literary Track Step 6: Auto QA Checklist
-- 讀取最終譯文（proofreader 完成後）
+Literary Track Auto QA Checklist
+- 讀取譯文（NMT 完成後 / proofreader 完成後）
 - 輕量 QA 檢查（不對文學風格扣分）：
   - 段落數一致性
   - 漏譯偵測（空段落）
+  - 未翻譯偵測（原文與譯文相同）
   - 數字/日期一致性（基本檢查）
 - 寫入 qa_result.json 到 GCS temp
-- 更新訂單狀態 → qa_review
+- 寫入 qa_flags 到資料庫
+- 當 SKIP_STATUS_UPDATE 未設定時，更新訂單狀態 → qa_review（僅供 proofreader 後的最終 QA）
 """
 
-import sys, re, json, logging
+import sys, re, json, logging, os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -44,19 +46,36 @@ def check_structure(segments: list[dict], translations: list[dict]) -> tuple[dic
             "translated_segment": f"{len(translations)} segments",
         })
 
-    for trans in translations:
-        if not trans.get("translated", "").strip():
-            idx = trans["index"]
+    trans_map = {t["index"]: t for t in translations}
+
+    for seg in segments:
+        idx = seg["index"]
+        trans = trans_map.get(idx, {})
+        translated = trans.get("translated", "").strip()
+        source = seg.get("text", "").strip()
+
+        if not translated:
             flags.append({
                 "paragraph_index": idx,
                 "flag_level": "must_fix",
                 "flag_type": "missing_translation",
-                "source_segment": segments[idx]["text"] if idx < len(segments) else "",
+                "source_segment": source,
                 "translated_segment": "",
             })
             summary["pass"] = False
             summary["flags"] += 1
             summary["details"].append(f"Segment {idx}: missing translation")
+        elif len(source) >= 10 and source == translated:
+            flags.append({
+                "paragraph_index": idx,
+                "flag_level": "must_fix",
+                "flag_type": "untranslated",
+                "source_segment": source,
+                "translated_segment": translated,
+            })
+            summary["pass"] = False
+            summary["flags"] += 1
+            summary["details"].append(f"Segment {idx}: untranslated (source matches translation)")
 
     return summary, flags
 
@@ -69,7 +88,7 @@ def check_numbers(segments: list[dict], translations: list[dict]) -> tuple[dict,
     number_re = re.compile(r"\d+")
 
     for seg, trans in zip(segments, translations):
-        src_numbers = set(number_re.findall(seg.get("source", "")))
+        src_numbers = set(number_re.findall(seg.get("text", "")))
         tgt_numbers = set(number_re.findall(trans.get("translated", "")))
 
         # Filter out single-digit numbers (often part of grammar)
@@ -83,7 +102,7 @@ def check_numbers(segments: list[dict], translations: list[dict]) -> tuple[dict,
                 "paragraph_index": idx,
                 "flag_level": "review",
                 "flag_type": "number_inconsistency",
-                "source_segment": seg["source"],
+                "source_segment": seg["text"],
                 "translated_segment": trans["translated"],
             })
             summary["flags"] += 1
@@ -124,14 +143,12 @@ def run():
 
         write_temp_json("qa_result.json", qa_result)
 
-        # 寫入 QA flags
-        for flag in all_flags:
-            flag["order_id"] = cfg.ORDER_ID
+        # 寫入 QA flags（使用 lt_qa_checklist job_type）
+        write_qa_flags(all_flags, job_type="lt_qa_checklist")
 
-        write_qa_flags(all_flags)
-
-        # 更新訂單狀態
-        update_order_field("status", "qa_review")
+        # 更新訂單狀態（僅在 proofreader 後的最終 QA）
+        if not os.environ.get("SKIP_STATUS_UPDATE"):
+            update_order_field("status", "qa_review")
 
         update_job_status("lt_qa_checklist", "success")
         logger.info(f"=== lt_qa_checklist DONE — {len(all_flags)} flags, {qa_result['must_fix_count']} must_fix ===")

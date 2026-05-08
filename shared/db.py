@@ -111,18 +111,18 @@ def update_order_field(field: str, value: str):
         )
 
 
-def write_qa_flags(flags: list[dict]):
-    """批次寫入 QA flags"""
+def write_qa_flags(flags: list[dict], job_type: str = "qa_auto"):
+    """批次寫入 QA flags。job_type 預設 'qa_auto'（Fast Track），LT 可傳 'lt_qa_checklist'。"""
     if not flags:
         return
     with get_db() as db:
         job_row = db.execute(text("""
             SELECT id FROM pipeline_jobs
-            WHERE order_id = :order_id AND job_type = 'qa_auto'
-        """), {"order_id": cfg.ORDER_ID}).fetchone()
+            WHERE order_id = :order_id AND job_type = :job_type
+        """), {"order_id": cfg.ORDER_ID, "job_type": job_type}).fetchone()
 
         if not job_row:
-            raise ValueError("qa_auto job not found, cannot write flags")
+            raise ValueError(f"{job_type} job not found, cannot write flags")
 
         job_id = str(job_row.id)
         for flag in flags:
