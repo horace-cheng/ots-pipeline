@@ -76,10 +76,10 @@ def write_output(filename: str, content: str, content_type: str = "text/plain") 
 
 
 def list_support_files() -> list[dict]:
-    """列出支援材料檔案（GCS uploads bucket 中的 support/{order_id}/ 目錄）"""
+    """列出支援材料檔案（GCS uploads bucket 中的 orders/{order_id}/support/ 目錄）"""
     client = get_client()
     bucket = client.bucket(cfg.BUCKET_UPLOADS)
-    prefix = f"support/{cfg.ORDER_ID}/"
+    prefix = f"orders/{cfg.ORDER_ID}/support/"
 
     blobs = list(bucket.list_blobs(prefix=prefix))
     return [

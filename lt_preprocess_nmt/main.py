@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from shared.config  import cfg
 from shared.db      import update_job_status, get_order_info, update_order_field, get_db
 from shared.storage import read_upload, read_temp_json, write_temp_json, list_support_files
-from shared.gemini  import translate
+from shared.gemini  import translate, delete_gemini_file
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -184,7 +184,7 @@ Rules:
 4. Maintain the original tone (formal, colloquial, poetic, etc.)
 5. Literary devices (metaphor, alliteration, rhythm) should be preserved where possible
 6. Output only the translation, no explanations or preamble
-{context_injection}
+7. Reference materials (glossaries, style guides, background documents) are attached for translation context — use them to inform terminology and style
 
 Source text:
 {source_text}
@@ -203,7 +203,7 @@ LT_PROMPT_JA = """あなたは{text source_lang_label}から日本語への文�
 4. 原文のトーン（形式的、口語的、詩的など）を維持
 5. 文学的修辞（隠喩、頭韻法、リズム）は可能な限り保持
 6. 翻訳結果のみを出力、説明や前置きは不要
-{context_injection}
+7. 参考資料（用語集、スタイルガイド、背景資料）は添付されています。翻訳のコンテキストとして用語や文体の参考にしてください
 
 原文：
 {source_text}
@@ -222,7 +222,7 @@ LT_PROMPT_KO = """당신은 {source_lang_label}에서 한국어로의 문학 번
 4. 원문의 어조（격식체, 구어체, 시적 등）유지
 5. 문학적 장치（은유, 두운, 리듬）는 가능한 한 유지
 6. 번역 결과만 출력, 설명이나 서문 불필요
-{context_injection}
+7. 참고 자료(용어집, 스타일 가이드, 배경 문서)가 첨부되어 있습니다. 번역 컨텍스트로 용어와 스타일을 참고하세요
 
 원문:
 {source_text}
@@ -250,9 +250,9 @@ LANG_LABELS = {
 def translate_batch(
     segments: list[dict],
     prompt_template: str,
-    context_inj: str,
     source_lang: str,
     batch_size: int = 3,
+    support_files: list | None = None,
 ) -> list[str]:
     """Translate segments in batches. LT uses smaller batches for higher quality."""
     results = [""] * len(segments)
@@ -273,11 +273,10 @@ def translate_batch(
 
         prompt = prompt_template.format(
             source_text      = combined,
-            context_injection = context_inj,
             source_lang_label = LANG_LABELS.get(source_lang, source_lang),
         )
 
-        response = translate(prompt, max_tokens=16384)
+        response = translate(prompt, max_tokens=16384, files=support_files)
 
         # Parse numbered responses
         numbered_parts = re.findall(r"\[(\d+)\]\s*(.*?)(?=\[\d+\]|$)", response, re.DOTALL)
@@ -325,39 +324,94 @@ def translate_batch(
 
 
 # ── 讀取支援材料 ───────────────────────────────────────────────────────────────
-def load_support_context(order_id: str) -> str:
-    """Read support materials and return as context string for translation prompt."""
+GEMINI_SUPPORTED_MIMES = {
+    "application/pdf", "text/plain", "text/html", "text/csv", "text/xml",
+    "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif",
+}
+
+DOCX_MIMES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+def _convert_docx_to_html(raw: bytes) -> str | None:
+    """Convert a .docx file to HTML using mammoth."""
+    try:
+        import mammoth
+        result = mammoth.convert_to_html(io.BytesIO(raw))
+        html = result.value
+        if not html.strip():
+            logger.warning("mammoth returned empty HTML, falling back to text extraction")
+            return None
+        return f"<!DOCTYPE html><html><meta charset=\"utf-8\"><body>{html}</body></html>"
+    except Exception as e:
+        logger.warning(f"mammoth conversion failed: {e}")
+        return None
+
+
+def load_support_context(order_id: str) -> list:
+    """Upload support materials to Gemini File API and return list of File objects.
+
+    - PDF (application/pdf)             → uploaded as-is
+    - DOCX (application/vnd...document) → converted to HTML via mammoth, uploaded as text/html
+    - Other unsupported types           → text extracted via normalize_text(), uploaded as text/plain
+    - text/html/csv/xml, images         → uploaded as-is
+    """
     try:
         from shared.storage import get_client
         from shared.config import cfg as gcfg
-        from google.cloud import storage
+        from shared.gemini import upload_file_to_gemini
 
         client = get_client()
         bucket = client.bucket(gcfg.BUCKET_UPLOADS)
-        prefix = f"support/{order_id}/"
+        prefix = f"orders/{order_id}/support/"
 
         blobs = list(bucket.list_blobs(prefix=prefix))
         if not blobs:
-            return ""
+            return []
 
-        context_parts = []
+        uploaded = []
         for blob in blobs:
             if blob.name.endswith("/"):
                 continue
             try:
-                text = blob.download_as_text(encoding="utf-8")
+                raw = blob.download_as_bytes()
                 filename = blob.name.split("/")[-1]
-                context_parts.append(f"--- Reference: {filename} ---\n{text[:3000]}")
+                mime_type = blob.content_type or "text/plain"
+
+                if mime_type in GEMINI_SUPPORTED_MIMES:
+                    gemini_file = upload_file_to_gemini(
+                        data=raw, display_name=filename, mime_type=mime_type,
+                    )
+                elif mime_type in DOCX_MIMES:
+                    html = _convert_docx_to_html(raw)
+                    if html:
+                        html_name = Path(filename).stem + ".html"
+                        gemini_file = upload_file_to_gemini(
+                            data=html.encode("utf-8"), display_name=html_name, mime_type="text/html",
+                        )
+                    else:
+                        text = normalize_text(raw)
+                        txt_name = Path(filename).stem + ".txt"
+                        gemini_file = upload_file_to_gemini(
+                            data=text.encode("utf-8"), display_name=txt_name, mime_type="text/plain",
+                        )
+                else:
+                    text = normalize_text(raw)
+                    txt_name = Path(filename).stem + ".txt"
+                    gemini_file = upload_file_to_gemini(
+                        data=text.encode("utf-8"), display_name=txt_name, mime_type="text/plain",
+                    )
+
+                uploaded.append(gemini_file)
+                logger.info(f"Uploaded support file to Gemini: {filename} ({gemini_file.uri})")
             except Exception as e:
-                logger.warning(f"Failed to read support file {blob.name}: {e}")
+                logger.warning(f"Failed to upload support file {blob.name} to Gemini: {e}")
 
-        if not context_parts:
-            return ""
-
-        return "\n\n".join(context_parts)
+        return uploaded
     except Exception as e:
         logger.warning(f"Support context loading failed (non-critical): {e}")
-        return ""
+        return []
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -387,10 +441,10 @@ def run():
         paragraphs = split_paragraphs(text)
         logger.info(f"Split into {len(paragraphs)} segments (LT large-segment mode)")
 
-        # ── 4. 載入支援材料 ──────────────────────────────────────────────────
-        context = load_support_context(cfg.ORDER_ID)
-        if context:
-            logger.info(f"Loaded support materials ({len(context)} chars)")
+        # ── 4. 載入支援材料（上傳至 Gemini File API）─────────────────────────
+        support_files = load_support_context(cfg.ORDER_ID)
+        if support_files:
+            logger.info(f"Uploaded {len(support_files)} support file(s) to Gemini")
         else:
             logger.info("No support materials found")
 
@@ -401,12 +455,16 @@ def run():
         translations = translate_batch(
             segments        = [{"index": i, "text": p} for i, p in enumerate(paragraphs)],
             prompt_template = LT_PROMPTS[target_lang],
-            context_inj     = context,
             source_lang     = source_lang,
             batch_size      = 3,  # smaller batches for literary quality
+            support_files   = support_files,
         )
 
-        # ── 6. 寫入中間產物 ──────────────────────────────────────────────────
+        # ── 6. 清理 Gemini 暫存檔案 ──────────────────────────────────────────
+        for f in support_files:
+            delete_gemini_file(f)
+
+        # ── 7. 寫入中間產物 ──────────────────────────────────────────────────
         segments_out = [
             {"index": i, "text": para, "char_count": len(para)}
             for i, para in enumerate(paragraphs)
@@ -430,7 +488,7 @@ def run():
             "para_count":     len(paragraphs),
             "gcs_upload":     gcs_path,
             "track_type":     "literary",
-            "has_support":    bool(context),
+            "has_support":    bool(support_files),
         }
 
         write_temp_json("segments.json",       segments_out)

@@ -7,3 +7,4 @@ google-cloud-tasks==2.16.0
 google-generativeai==0.8.3
 anthropic==0.34.0
 pypdf==5.1.0
+mammoth==1.12.0
