@@ -111,6 +111,22 @@ def update_order_field(field: str, value: str):
         )
 
 
+def get_sample_package() -> dict | None:
+    """取得訂單的試譯提案包（若存在）"""
+    with get_db() as db:
+        row = db.execute(text("""
+            SELECT translator_bio, book_fact_sheet, synopsis, market_analysis
+            FROM order_sample_packages
+            WHERE order_id = :order_id AND status = 'generated'
+        """), {"order_id": cfg.ORDER_ID}).fetchone()
+        if not row:
+            return None
+        result = dict(row._mapping)
+        if isinstance(result.get("book_fact_sheet"), str):
+            result["book_fact_sheet"] = __import__("json").loads(result["book_fact_sheet"])
+        return result
+
+
 def write_qa_flags(flags: list[dict], job_type: str = "qa_auto"):
     """批次寫入 QA flags。job_type 預設 'qa_auto'（Fast Track），LT 可傳 'lt_qa_checklist'。"""
     if not flags:

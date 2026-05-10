@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config  import cfg
-from shared.db      import update_job_status, get_order_info, update_order_field, get_db
+from shared.db      import update_job_status, get_order_info, update_order_field, get_db, get_sample_package
 from shared.storage import read_temp_json, write_output
 
 logging.basicConfig(level=logging.INFO,
@@ -36,7 +36,8 @@ LANG_LABELS = {
 }
 
 
-def format_txt(translations: list[dict], metadata: dict) -> str:
+def format_txt(translations: list[dict], metadata: dict,
+               sample_pkg: dict | None = None) -> str:
     order    = metadata.get("order_id", "")
     src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), metadata.get("source_lang", ""))
     tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), metadata.get("target_lang", ""))
@@ -49,10 +50,49 @@ def format_txt(translations: list[dict], metadata: dict) -> str:
         f"語言方向：{src_lang} → {tgt_lang}",
         f"交付日期：{now}",
         "=" * 60,
-        "",
-        "【譯文】",
-        "",
     ]
+
+    if sample_pkg:
+        bfs = sample_pkg.get("book_fact_sheet") or {}
+        if isinstance(bfs, str):
+            bfs = __import__("json").loads(bfs)
+        fields = [
+            ("title_original", "title_target", "書名"),
+            ("author_original", "author_target", "作者"),
+            ("publisher_original", "publisher_target", "出版社"),
+            ("pub_date_original", "pub_date_target", "出版日期"),
+            ("category_original", "category_target", "類別"),
+            ("sales_original", "sales_target", "銷售資訊"),
+        ]
+        for orig_k, tgt_k, label in fields:
+            orig_v = bfs.get(orig_k, "")
+            tgt_v  = bfs.get(tgt_k, "")
+            if orig_v or tgt_v:
+                lines.append(f"  {label}  |  {orig_v}  |  {tgt_v}")
+        wc = bfs.get("word_count", "")
+        if wc:
+            lines.append(f"  字數  |  {wc}")
+        lines.append("")
+        synopsis = sample_pkg.get("synopsis", "")
+        if synopsis:
+            lines.append(f"【故事大綱】")
+            lines.append(synopsis)
+            lines.append("")
+        bio = sample_pkg.get("translator_bio", "")
+        if bio:
+            lines.append(f"【譯者簡介】")
+            lines.append(bio)
+            lines.append("")
+        market = sample_pkg.get("market_analysis", "")
+        if market:
+            lines.append(f"【市場分析】")
+            lines.append(market)
+            lines.append("")
+        lines.append("=" * 60)
+
+    lines.append("")
+    lines.append("【譯文】")
+    lines.append("")
 
     for trans in sorted(translations, key=lambda x: x["index"]):
         lines.append(trans["translated"])
@@ -69,11 +109,79 @@ def format_txt(translations: list[dict], metadata: dict) -> str:
 
 
 def format_html(translations: list[dict], metadata: dict,
-                qa_result: dict | None = None) -> str:
+                qa_result: dict | None = None,
+                sample_pkg: dict | None = None) -> str:
     order    = metadata.get("order_id", "")
     src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), "")
     tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), "")
     now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    pkg_html = ""
+    if sample_pkg:
+        parts = []
+        bfs = sample_pkg.get("book_fact_sheet") or {}
+        if isinstance(bfs, str):
+            bfs = __import__("json").loads(bfs)
+        fact_rows = ""
+        fields = [
+            ("title_original", "title_target", "書名"),
+            ("author_original", "author_target", "作者"),
+            ("publisher_original", "publisher_target", "出版社"),
+            ("pub_date_original", "pub_date_target", "出版日期"),
+            ("category_original", "category_target", "類別"),
+            ("sales_original", "sales_target", "銷售資訊"),
+        ]
+        for orig_k, tgt_k, label in fields:
+            orig_v = bfs.get(orig_k, "")
+            tgt_v  = bfs.get(tgt_k, "")
+            if orig_v or tgt_v:
+                fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>{label}</td><td style='padding:4px 8px;font-size:0.9rem'>{orig_v}</td><td style='padding:4px 8px;font-size:0.9rem'>{tgt_v}</td></tr>\n"
+        wc = bfs.get("word_count", "")
+        if wc:
+            fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>字數</td><td colspan='2' style='padding:4px 8px;font-size:0.9rem'>{wc}</td></tr>\n"
+
+        if fact_rows:
+            parts.append(f"""
+<div style='margin-bottom:2rem'>
+<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>書目資料</h2>
+<table style='width:100%;border-collapse:collapse'>
+<thead><tr style='border-bottom:1px solid #ddd'><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>欄位</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>原文</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>譯文</th></tr></thead>
+<tbody>
+{fact_rows}
+</tbody>
+</table>
+</div>""")
+
+        synopsis = sample_pkg.get("synopsis", "")
+        if synopsis:
+            parts.append(f"""
+<div style='margin-bottom:2rem'>
+<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>故事大綱</h2>
+<p style='font-size:0.95rem;line-height:1.7;text-align:justify'>{synopsis}</p>
+</div>""")
+
+        bio = sample_pkg.get("translator_bio", "")
+        if bio:
+            parts.append(f"""
+<div style='margin-bottom:2rem'>
+<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>譯者簡介</h2>
+<p style='font-size:0.9rem;line-height:1.6;color:#555'>{bio}</p>
+</div>""")
+
+        market = sample_pkg.get("market_analysis", "")
+        if market:
+            parts.append(f"""
+<div style='margin-bottom:2rem'>
+<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>市場分析</h2>
+<p style='font-size:0.9rem;line-height:1.6;color:#555'>{market}</p>
+</div>""")
+
+        if parts:
+            pkg_html = f"""
+<div style='margin-bottom:2.5rem;padding:1.5rem;background:#FAFAFE;border-radius:8px;border:1px solid #E8E0F7'>
+{''.join(parts)}
+</div>
+<hr style='border:none;border-top:2px solid #8B5CF6;margin-bottom:2rem'>"""
 
     para_html = "\n".join(
         f"<p class='para'>{trans['translated']}</p>"
@@ -113,9 +221,10 @@ def format_html(translations: list[dict], metadata: dict,
     {f'&nbsp;|&nbsp; {qa_score}' if qa_score else ''}
   </div>
 </header>
-<main>
+  <main>
+{pkg_html}
 {para_html}
-</main>
+  </main>
 <footer>
   本譯文由 OTS 翻譯服務提供（AI 初稿 + 編輯審閱 + 校對審閱）。
   如有疑問請聯繫 service@ots.tw
@@ -217,8 +326,10 @@ def run():
 
         logger.info(f"Formatting output: {len(translations)} segments")
 
-        txt_content  = format_txt(translations, metadata)
-        html_content = format_html(translations, metadata, qa_result)
+        sample_pkg = get_sample_package()
+
+        txt_content  = format_txt(translations, metadata, sample_pkg)
+        html_content = format_html(translations, metadata, qa_result, sample_pkg)
 
         order_short  = cfg.ORDER_ID[:8]
         tgt_lang     = metadata.get("target_lang", "en")
