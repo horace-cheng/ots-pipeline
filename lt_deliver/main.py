@@ -35,20 +35,164 @@ LANG_LABELS = {
     "ko":         "한국어",
 }
 
+_LABEL_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "zh-tw": {
+        "title":             "OTS 翻譯服務 — Literary Track（文學精譯）",
+        "order":             "訂單編號",
+        "lang_dir":          "語言方向",
+        "delivery_date":     "交付日期",
+        "book_fact_sheet":   "書目資料",
+        "field":             "欄位",
+        "original":          "原文",
+        "translation":       "譯文",
+        "word_count":        "字數",
+        "synopsis":          "故事大綱",
+        "translator_bio":    "譯者簡介",
+        "market_analysis":   "市場分析",
+        "translated_text":   "譯文",
+        "footer":            "本譯文由 OTS 翻譯服務提供（AI 初稿 + 編輯審閱 + 校對審閱）。",
+        "footer_contact":    "如有任何疑問，請聯繫 service@ots.tw",
+        "title_label":       "書名",
+        "author":            "作者",
+        "publisher":         "出版社",
+        "pub_date":          "出版日期",
+        "category":          "類別",
+        "sales":             "銷售資訊",
+        "qa_score":          "QA 評分",
+    },
+    "en": {
+        "title":             "OTS Translation — Literary Track (Premium)",
+        "order":             "Order",
+        "lang_dir":          "Language Direction",
+        "delivery_date":     "Delivery Date",
+        "book_fact_sheet":   "Book Fact Sheet",
+        "field":             "Field",
+        "original":          "Original",
+        "translation":       "Translation",
+        "word_count":        "Word Count",
+        "synopsis":          "Synopsis",
+        "translator_bio":    "Translator Bio",
+        "market_analysis":   "Market Analysis",
+        "translated_text":   "Translation",
+        "footer":            "This translation is provided by OTS Translation Service (AI draft + editor review + proofreader review).",
+        "footer_contact":    "For inquiries, contact service@ots.tw",
+        "title_label":       "Title",
+        "author":            "Author",
+        "publisher":         "Publisher",
+        "pub_date":          "Publication Date",
+        "category":          "Category",
+        "sales":             "Sales Info",
+        "qa_score":          "QA Score",
+    },
+    "ja": {
+        "title":             "OTS翻訳 — Literary Track（文学精訳）",
+        "order":             "注文番号",
+        "lang_dir":          "言語方向",
+        "delivery_date":     "納品日",
+        "book_fact_sheet":   "書籍情報",
+        "field":             "項目",
+        "original":          "原文",
+        "translation":       "訳文",
+        "word_count":        "文字数",
+        "synopsis":          "あらすじ",
+        "translator_bio":    "翻訳者紹介",
+        "market_analysis":   "市場分析",
+        "translated_text":   "翻訳文",
+        "footer":            "本翻訳はOTS翻訳サービスによって提供されています（AI初稿＋編集者レビュー＋校正者レビュー）。",
+        "footer_contact":    "お問い合わせ：service@ots.tw",
+        "title_label":       "タイトル",
+        "author":            "著者",
+        "publisher":         "出版社",
+        "pub_date":          "出版日",
+        "category":          "カテゴリ",
+        "sales":             "販売情報",
+        "qa_score":          "QAスコア",
+    },
+    "ko": {
+        "title":             "OTS 번역 — Literary Track (문학 정역)",
+        "order":             "주문 번호",
+        "lang_dir":          "언어 방향",
+        "delivery_date":     "납품일",
+        "book_fact_sheet":   "도서 정보",
+        "field":             "항목",
+        "original":          "원문",
+        "translation":       "번역문",
+        "word_count":        "단어 수",
+        "synopsis":          "시놉시스",
+        "translator_bio":    "번역가 소개",
+        "market_analysis":   "시장 분석",
+        "translated_text":   "번역문",
+        "footer":            "본 번역은 OTS 번역 서비스가 제공합니다 (AI 초안 + 편집자 검토 + 교정자 검토).",
+        "footer_contact":    "문의: service@ots.tw",
+        "title_label":       "제목",
+        "author":            "저자",
+        "publisher":         "출판사",
+        "pub_date":          "출판일",
+        "category":          "카테고리",
+        "sales":             "판매 정보",
+        "qa_score":          "QA 점수",
+    },
+}
+
+_FIELD_LABELS: list[tuple[str, str, str]] = [
+    ("title_original", "title_target", "title_label"),
+    ("author_original", "author_target", "author"),
+    ("publisher_original", "publisher_target", "publisher"),
+    ("pub_date_original", "pub_date_target", "pub_date"),
+    ("category_original", "category_target", "category"),
+    ("sales_original", "sales_target", "sales"),
+]
+
+
+def _l10n(tgt_lang: str, key: str) -> str:
+    """Get localized label for target language, fallback to zh-tw."""
+    lang_code = tgt_lang if tgt_lang in _LABEL_TRANSLATIONS else "zh-tw"
+    return _LABEL_TRANSLATIONS[lang_code].get(key, key)
+
+
+def _md_to_html(text: str) -> str:
+    """Convert basic markdown to HTML for delivery output."""
+    import re
+    text = re.sub(r'^### (.+)$', r'<h3>\1</h3>', text, flags=re.MULTILINE)
+    text = re.sub(r'^## (.+)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
+    text = re.sub(r'^# (.+)$', r'<h1>\1</h1>', text, flags=re.MULTILINE)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+    text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+    paragraphs = []
+    for block in text.split('\n\n'):
+        block = block.strip()
+        if not block:
+            continue
+        if block.startswith('<h'):
+            paragraphs.append(block)
+        elif block.startswith('- ') or block.startswith('* '):
+            items = []
+            for line in block.split('\n'):
+                line = line.strip()
+                if line.startswith('- ') or line.startswith('* '):
+                    items.append(f'<li>{line[2:]}</li>')
+            if items:
+                paragraphs.append(f'<ul>{"".join(items)}</ul>')
+        else:
+            paragraphs.append(f'<p>{block}</p>')
+    return '\n'.join(paragraphs)
+
 
 def format_txt(translations: list[dict], metadata: dict,
                sample_pkg: dict | None = None) -> str:
     order    = metadata.get("order_id", "")
     src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), metadata.get("source_lang", ""))
     tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), metadata.get("target_lang", ""))
+    tgt_code = metadata.get("target_lang", "zh-tw")
     now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     lines = [
         "=" * 60,
-        f"OTS 翻譯服務 — Literary Track（文學精譯）",
-        f"訂單編號：{order}",
-        f"語言方向：{src_lang} → {tgt_lang}",
-        f"交付日期：{now}",
+        _l10n(tgt_code, "title"),
+        f"{_l10n(tgt_code, 'order')}：{order}",
+        f"{_l10n(tgt_code, 'lang_dir')}：{src_lang} → {tgt_lang}",
+        f"{_l10n(tgt_code, 'delivery_date')}：{now}",
         "=" * 60,
     ]
 
@@ -56,42 +200,35 @@ def format_txt(translations: list[dict], metadata: dict,
         bfs = sample_pkg.get("book_fact_sheet") or {}
         if isinstance(bfs, str):
             bfs = __import__("json").loads(bfs)
-        fields = [
-            ("title_original", "title_target", "書名"),
-            ("author_original", "author_target", "作者"),
-            ("publisher_original", "publisher_target", "出版社"),
-            ("pub_date_original", "pub_date_target", "出版日期"),
-            ("category_original", "category_target", "類別"),
-            ("sales_original", "sales_target", "銷售資訊"),
-        ]
-        for orig_k, tgt_k, label in fields:
+        for orig_k, tgt_k, label_key in _FIELD_LABELS:
             orig_v = bfs.get(orig_k, "")
             tgt_v  = bfs.get(tgt_k, "")
             if orig_v or tgt_v:
+                label = _l10n(tgt_code, label_key)
                 lines.append(f"  {label}  |  {orig_v}  |  {tgt_v}")
         wc = bfs.get("word_count", "")
         if wc:
-            lines.append(f"  字數  |  {wc}")
+            lines.append(f"  {_l10n(tgt_code, 'word_count')}  |  {wc}")
         lines.append("")
         synopsis = sample_pkg.get("synopsis", "")
         if synopsis:
-            lines.append(f"【故事大綱】")
+            lines.append(f"【{_l10n(tgt_code, 'synopsis')}】")
             lines.append(synopsis)
             lines.append("")
         bio = sample_pkg.get("translator_bio", "")
         if bio:
-            lines.append(f"【譯者簡介】")
+            lines.append(f"【{_l10n(tgt_code, 'translator_bio')}】")
             lines.append(bio)
             lines.append("")
         market = sample_pkg.get("market_analysis", "")
         if market:
-            lines.append(f"【市場分析】")
+            lines.append(f"【{_l10n(tgt_code, 'market_analysis')}】")
             lines.append(market)
             lines.append("")
         lines.append("=" * 60)
 
     lines.append("")
-    lines.append("【譯文】")
+    lines.append(f"【{_l10n(tgt_code, 'translated_text')}】")
     lines.append("")
 
     for trans in sorted(translations, key=lambda x: x["index"]):
@@ -100,8 +237,8 @@ def format_txt(translations: list[dict], metadata: dict,
 
     lines += [
         "=" * 60,
-        "本譯文由 OTS 翻譯服務提供（AI 初稿 + 編輯審閱 + 校對審閱）。",
-        "如有任何疑問，請聯繫 service@ots.tw",
+        _l10n(tgt_code, "footer"),
+        _l10n(tgt_code, "footer_contact"),
         "=" * 60,
     ]
 
@@ -114,6 +251,7 @@ def format_html(translations: list[dict], metadata: dict,
     order    = metadata.get("order_id", "")
     src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), "")
     tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), "")
+    tgt_code = metadata.get("target_lang", "zh-tw")
     now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     pkg_html = ""
@@ -123,29 +261,22 @@ def format_html(translations: list[dict], metadata: dict,
         if isinstance(bfs, str):
             bfs = __import__("json").loads(bfs)
         fact_rows = ""
-        fields = [
-            ("title_original", "title_target", "書名"),
-            ("author_original", "author_target", "作者"),
-            ("publisher_original", "publisher_target", "出版社"),
-            ("pub_date_original", "pub_date_target", "出版日期"),
-            ("category_original", "category_target", "類別"),
-            ("sales_original", "sales_target", "銷售資訊"),
-        ]
-        for orig_k, tgt_k, label in fields:
+        for orig_k, tgt_k, label_key in _FIELD_LABELS:
             orig_v = bfs.get(orig_k, "")
             tgt_v  = bfs.get(tgt_k, "")
+            label = _l10n(tgt_code, label_key)
             if orig_v or tgt_v:
                 fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>{label}</td><td style='padding:4px 8px;font-size:0.9rem'>{orig_v}</td><td style='padding:4px 8px;font-size:0.9rem'>{tgt_v}</td></tr>\n"
         wc = bfs.get("word_count", "")
         if wc:
-            fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>字數</td><td colspan='2' style='padding:4px 8px;font-size:0.9rem'>{wc}</td></tr>\n"
+            fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>{_l10n(tgt_code, 'word_count')}</td><td colspan='2' style='padding:4px 8px;font-size:0.9rem'>{wc}</td></tr>\n"
 
         if fact_rows:
             parts.append(f"""
 <div style='margin-bottom:2rem'>
-<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>書目資料</h2>
+<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'book_fact_sheet')}</h2>
 <table style='width:100%;border-collapse:collapse'>
-<thead><tr style='border-bottom:1px solid #ddd'><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>欄位</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>原文</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>譯文</th></tr></thead>
+<thead><tr style='border-bottom:1px solid #ddd'><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'field')}</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'original')}</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'translation')}</th></tr></thead>
 <tbody>
 {fact_rows}
 </tbody>
@@ -156,24 +287,24 @@ def format_html(translations: list[dict], metadata: dict,
         if synopsis:
             parts.append(f"""
 <div style='margin-bottom:2rem'>
-<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>故事大綱</h2>
-<p style='font-size:0.95rem;line-height:1.7;text-align:justify'>{synopsis}</p>
+<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'synopsis')}</h2>
+{_md_to_html(synopsis)}
 </div>""")
 
         bio = sample_pkg.get("translator_bio", "")
         if bio:
             parts.append(f"""
 <div style='margin-bottom:2rem'>
-<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>譯者簡介</h2>
-<p style='font-size:0.9rem;line-height:1.6;color:#555'>{bio}</p>
+<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'translator_bio')}</h2>
+{_md_to_html(bio)}
 </div>""")
 
         market = sample_pkg.get("market_analysis", "")
         if market:
             parts.append(f"""
 <div style='margin-bottom:2rem'>
-<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>市場分析</h2>
-<p style='font-size:0.9rem;line-height:1.6;color:#555'>{market}</p>
+<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'market_analysis')}</h2>
+{_md_to_html(market)}
 </div>""")
 
         if parts:
@@ -191,14 +322,14 @@ def format_html(translations: list[dict], metadata: dict,
     qa_score = ""
     if qa_result and qa_result.get("layer4_llm_judge"):
         score = qa_result["layer4_llm_judge"].get("score", "")
-        qa_score = f"<span class='qa-score'>QA 評分：{score}/100</span>"
+        qa_score = f"<span class='qa-score'>{_l10n(tgt_code, 'qa_score')}：{score}/100</span>"
 
     return f"""<!DOCTYPE html>
 <html lang="{metadata.get('target_lang', 'en')}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OTS 翻譯 — {order}</title>
+<title>{_l10n(tgt_code, 'title')} — {order}</title>
 <style>
   body {{ font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 2rem; color: #333; }}
   header {{ border-bottom: 2px solid #8B5CF6; padding-bottom: 1rem; margin-bottom: 2rem; }}
@@ -213,21 +344,21 @@ def format_html(translations: list[dict], metadata: dict,
 </head>
 <body>
 <header>
-  <h1>OTS 翻譯服務 — Literary Track（文學精譯）</h1>
+  <h1>{_l10n(tgt_code, 'title')}</h1>
   <div class="meta">
-    <span>訂單：{order}</span> &nbsp;|&nbsp;
-    <span>{src_lang} → {tgt_lang}</span> &nbsp;|&nbsp;
-    <span>{now}</span>
+    <span>{_l10n(tgt_code, 'order')}：{order}</span> &nbsp;|&nbsp;
+    <span>{_l10n(tgt_code, 'lang_dir')}：{src_lang} → {tgt_lang}</span> &nbsp;|&nbsp;
+    <span>{_l10n(tgt_code, 'delivery_date')}：{now}</span>
     {f'&nbsp;|&nbsp; {qa_score}' if qa_score else ''}
   </div>
 </header>
-  <main>
+<main>
 {pkg_html}
 {para_html}
-  </main>
+</main>
 <footer>
-  本譯文由 OTS 翻譯服務提供（AI 初稿 + 編輯審閱 + 校對審閱）。
-  如有疑問請聯繫 service@ots.tw
+  {_l10n(tgt_code, 'footer')}<br>
+  {_l10n(tgt_code, 'footer_contact')}
 </footer>
 </body>
 </html>"""
