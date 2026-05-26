@@ -24,15 +24,15 @@ logger = logging.getLogger("ft_nmt")
 
 
 # ── Prompt 模板 ───────────────────────────────────────────────────────────────
-PROMPT_EN = """You are a professional translator specializing in Taiwanese (Taiwanese Hokkien) to English translation.
+PROMPT = """You are a professional translator specializing in Taiwanese (Taiwanese Hokkien) to {target_lang} translation.
 
-Translate the following Taiwanese text to natural, readable English.
+Translate the following Taiwanese text to natural, readable {target_lang}.
 
 Rules:
 1. Preserve paragraph structure exactly — do not merge or split paragraphs
-2. Translate ALL content to English. Do NOT leave original Chinese characters in the output (except in brief parenthetical romanization for proper nouns).
+2. Translate ALL content to {target_lang}. Do NOT leave original Chinese characters in the output (except in brief parenthetical romanization for proper nouns).
 3. Preserve proper nouns (names, places) with romanization when first mentioned
-4. Cultural terms without English equivalents: keep the original with a brief parenthetical explanation
+4. Cultural terms without {target_lang} equivalents: keep the original with a brief parenthetical explanation
 5. Tailo romanization markers may be kept in parentheses where helpful (e.g., tshit-thô)
 6. Output only the translation, no explanations or preamble
 {term_injection}
@@ -40,49 +40,7 @@ Rules:
 Source (Taiwanese):
 {source_text}
 
-English translation:"""
-
-PROMPT_JA = """あなたは台湾語（台湾閩南語）→日本語翻訳の専門家です。
-
-以下の台湾語テキストを自然で読みやすい日本語に翻訳してください。
-
-規則：
-1. 段落構造を完全に保持すること（段落の統合・分割は不可）
-2. 全てのコンテンツを日本語に翻訳すること。固有名詞の簡潔な括弧内ローマ字表記を除き、原文の漢字を出力に残さないこと。
-3. 固有名詞（人名・地名）は初出時に原文をカタカナ読みで併記
-4. 日本語に対応する語がない文化的な言葉は原文を残し、括弧で簡単な説明を加える
-5. 台羅ローマ字表記は必要に応じて括弧内に残す（例：tshit-thô）
-6. 翻訳結果のみを出力し、説明や前置きは不要
-{term_injection}
-
-原文（台湾語）：
-{source_text}
-
-日本語翻訳："""
-
-PROMPT_KO = """당신은 대만어（대만 민남어）→ 한국어 번역 전문가입니다。
-
-다음 대만어 텍스트를 자연스럽고 읽기 쉬운 한국어로 번역하세요。
-
-규칙：
-1. 단락 구조를 완전히 유지할 것（단락 병합 또는 분리 금지）
-2. 모든 콘텐츠를 한국어로 번역할 것。고유명사의 간단한 괄호 안 로마자 표기를 제외하고 원문 한자를 출력에 남기지 말 것。
-3. 고유명사（인명、지명）는 첫 등장 시 원문을 병기
-4. 한국어로 대응하는 표현이 없는 문화적 어휘는 원문을 유지하고 괄호로 간단한 설명 추가
-5. 대만어 로마자 표기는 필요 시 괄호 안에 유지（예：tshit-thô）
-6. 번역 결과만 출력、설명이나 서문 불필요
-{term_injection}
-
-원문（대만어）：
-{source_text}
-
-한국어 번역："""
-
-PROMPTS = {
-    "en": PROMPT_EN,
-    "ja": PROMPT_JA,
-    "ko": PROMPT_KO,
-}
+{target_lang} translation:"""
 
 
 def build_term_injection(terms: dict, target_lang: str) -> str:
@@ -104,11 +62,10 @@ def _cjk_overlap(src: str, tgt: str) -> float:
     return sum(1 for c in src_cjk if c in tgt_set) / len(src_cjk)
 
 
-RETRY_PROMPTS = {
-    "en": """CRITICAL: The previous attempt failed to translate the text properly — it still contains Chinese characters instead of English.
+RETRY_PROMPT = """CRITICAL: The previous attempt failed to translate the text properly — it still contains Chinese characters instead of {target_lang}.
 
-Please translate the following Taiwanese text to natural, readable English again.
-You MUST translate EVERYTHING to English. Do NOT leave any Chinese characters in the output.
+Please translate the following Taiwanese text to natural, readable {target_lang} again.
+You MUST translate EVERYTHING to {target_lang}. Do NOT leave any Chinese characters in the output.
 
 Rules:
 1. Output ONLY the translation, no explanations
@@ -118,32 +75,7 @@ Rules:
 Source (Taiwanese):
 {source_text}
 
-English translation:""",
-
-    "ja": """重要：前回の翻訳は失敗しました。出力に漢字が残っています。日本語に完全に翻訳してください。
-
-規則：
-1. 翻訳結果のみを出力、説明不要
-2. 原文の漢字を残さない（括弧内のローマ字は可）
-3. 段落構造を完全に保持
-
-原文（台湾語）：
-{source_text}
-
-日本語翻訳：""",
-
-    "ko": """중요: 이전 번역이 실패했습니다. 원문 한자가 출력에 남아 있습니다. 한국어로 완전히 번역하세요.
-
-규칙:
-1. 번역 결과만 출력, 설명 불필요
-2. 원문 한자를 남기지 말 것（괄호 안 로마자 표기는 허용）
-3. 단락 구조를 완전히 유지
-
-원문（대만어）：
-{source_text}
-
-한국어 번역：""",
-}
+{target_lang} translation:"""
 
 
 def translate_single(
@@ -154,7 +86,7 @@ def translate_single(
     max_retries: int = 2,
 ) -> str:
     """Translate one segment with retry if partial_untranslated detected."""
-    prompt = prompt_template.format(source_text=source_text, term_injection=term_inj)
+    prompt = prompt_template.format(source_text=source_text, term_injection=term_inj, target_lang=target_lang)
 
     for attempt in range(max_retries + 1):
         response = translate(prompt)
@@ -169,7 +101,7 @@ def translate_single(
                 logger.warning(
                     f"Segment partial untranslated (overlap={overlap:.0%}), retrying {attempt + 1}/{max_retries}"
                 )
-                prompt = RETRY_PROMPTS[target_lang].format(source_text=source_text)
+                prompt = RETRY_PROMPT.format(source_text=source_text, target_lang=target_lang)
                 continue
 
         return result
@@ -201,6 +133,7 @@ def translate_batch(segments: list[dict], prompt_template: str,
         prompt = prompt_template.format(
             source_text    = combined,
             term_injection = term_inj,
+            target_lang    = target_lang,
         )
 
         response = translate(prompt)
@@ -285,12 +218,9 @@ def run():
 
         logger.info(f"NMT: {source_lang} → {target_lang}, {len(segments)} segments")
 
-        if target_lang not in PROMPTS:
-            raise ValueError(f"Unsupported target language: {target_lang}")
-
         target_translations = translate_batch(
             segments        = segments,
-            prompt_template = PROMPTS[target_lang],
+            prompt_template = PROMPT,
             terms           = terms,
             target_lang     = target_lang,
         )

@@ -44,11 +44,7 @@ class TestCjkOverlap:
         assert overlap < 0.3
 
 
-RETRY_PROMPTS = {
-    "en": "CRITICAL: The previous attempt failed. Please translate again.\n\nSource:\n{source_text}\n\nEnglish translation:",
-    "ja": "重要：前回の翻訳は失敗しました。\n\n原文：\n{source_text}\n\n日本語翻訳：",
-    "ko": "중요: 이전 번역이 실패했습니다.\n\n원문：\n{source_text}\n\n한국어 번역：",
-}
+RETRY_PROMPT = "CRITICAL: The previous attempt failed. Please translate to {target_lang} again.\n\nSource:\n{source_text}\n\n{target_lang} translation:"
 
 
 def translate_single_impl(
@@ -60,7 +56,7 @@ def translate_single_impl(
     translate_fn: callable,
 ) -> str:
     """Translate one segment with retry if partial_untranslated detected."""
-    prompt = prompt_template.format(source_text=source_text, term_injection=term_inj)
+    prompt = prompt_template.format(source_text=source_text, term_injection=term_inj, target_lang=target_lang)
 
     for attempt in range(max_retries + 1):
         response = translate_fn(prompt)
@@ -72,7 +68,7 @@ def translate_single_impl(
         if attempt < max_retries and len(source_text) > 50:
             overlap = _cjk_overlap(source_text, result)
             if overlap > 0.5:
-                prompt = RETRY_PROMPTS.get(target_lang, RETRY_PROMPTS["en"]).format(source_text=source_text)
+                prompt = RETRY_PROMPT.format(source_text=source_text, target_lang=target_lang)
                 continue
 
         return result
@@ -150,4 +146,4 @@ class TestTranslateSingle:
         prompts = mock.get_prompts()
         assert len(prompts) == 2
         assert prompts[0].startswith("You are a professional")
-        assert "CRITICAL" in prompts[1] or "failed" in prompts[1].lower()
+        assert "CRITICAL" in prompts[1]

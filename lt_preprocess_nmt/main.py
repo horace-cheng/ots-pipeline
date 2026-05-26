@@ -172,7 +172,7 @@ def normalize_text(raw: bytes) -> str:
 
 
 # ── 文學翻譯 Prompt ───────────────────────────────────────────────────────────
-LT_PROMPT_EN = """You are a professional literary translator specializing in {source_lang_label} to English translation.
+LT_PROMPT = """You are a professional literary translator specializing in {source_lang_label} to {target_lang} translation.
 
 Translate the following text with careful attention to literary style, tone, rhythm, and emotional nuance.
 This is a literary work — preserve the author's voice, imagery, and artistic intent.
@@ -189,60 +189,23 @@ Rules:
 Source text:
 {source_text}
 
-English translation:"""
-
-LT_PROMPT_JA = """あなたは{text source_lang_label}から日本語への文学翻訳の専門家です。
-
-文学的な文体、トーン、リズム、感情のニュアンスに細心の注意を払って翻訳してください。
-これは文学作品です — 作者の声、イメージ、芸術的意図を保持してください。
-
-規則：
-1. 段落構造を完全に保持（段落の統合・分割は不可）
-2. すべてのコンテンツを忠実に翻訳。文化的参照は理解に必要な場合のみ簡潔な文脈ヒントを添える
-3. 固有名詞、地名、文化用語は適切なローマ字表記を保持
-4. 原文のトーン（形式的、口語的、詩的など）を維持
-5. 文学的修辞（隠喩、頭韻法、リズム）は可能な限り保持
-6. 翻訳結果のみを出力、説明や前置きは不要
-7. 参考資料（用語集、スタイルガイド、背景資料）は添付されています。翻訳のコンテキストとして用語や文体の参考にしてください
-
-原文：
-{source_text}
-
-日本語翻訳："""
-
-LT_PROMPT_KO = """당신은 {source_lang_label}에서 한국어로의 문학 번역 전문가입니다.
-
-문학적 스타일, 어조, 리듬, 감정적 뉘앙스에 세심한 주의를 기울여 번역하세요.
-이것은 문학 작품입니다 — 작가의 목소리, 이미지, 예술적 의도를 보존하세요.
-
-규칙:
-1. 단락 구조를 완전히 유지（단락 병합 또는 분리 금지）
-2. 모든 콘텐츠를 충실히 번역. 문화적 참조는 이해에 필수적인 경우에만 간단한 문맥 힌트 추가
-3. 고유명사, 지명, 문화 용어는 적절한 로마자 표기 유지
-4. 원문의 어조（격식체, 구어체, 시적 등）유지
-5. 문학적 장치（은유, 두운, 리듬）는 가능한 한 유지
-6. 번역 결과만 출력, 설명이나 서문 불필요
-7. 참고 자료(용어집, 스타일 가이드, 배경 문서)가 첨부되어 있습니다. 번역 컨텍스트로 용어와 스타일을 참고하세요
-
-원문:
-{source_text}
-
-한국어 번역:"""
-
-LT_PROMPTS = {
-    "en": LT_PROMPT_EN,
-    "ja": LT_PROMPT_JA,
-    "ko": LT_PROMPT_KO,
-}
+{target_lang} translation:"""
 
 LANG_LABELS = {
     "tai-lo":     "Taiwanese Hokkien",
     "hakka":      "Hakka",
     "indigenous": "Taiwanese Indigenous",
     "zh-tw":      "Traditional Chinese",
+    "zh-cn":      "Simplified Chinese",
     "en":         "English",
     "ja":         "Japanese",
     "ko":         "Korean",
+    "fr":         "French",
+    "de":         "German",
+    "es":         "Spanish",
+    "vi":         "Vietnamese",
+    "th":         "Thai",
+    "cs":         "Czech",
 }
 
 
@@ -251,6 +214,7 @@ def translate_batch(
     segments: list[dict],
     prompt_template: str,
     source_lang: str,
+    target_lang: str,
     batch_size: int = 3,
     support_files: list | None = None,
 ) -> list[str]:
@@ -272,8 +236,9 @@ def translate_batch(
         )
 
         prompt = prompt_template.format(
-            source_text      = combined,
+            source_text       = combined,
             source_lang_label = LANG_LABELS.get(source_lang, source_lang),
+            target_lang       = LANG_LABELS.get(target_lang, target_lang),
         )
 
         response = translate(prompt, max_tokens=16384, files=support_files)
@@ -449,13 +414,11 @@ def run():
             logger.info("No support materials found")
 
         # ── 5. NMT 翻譯（文學風格 prompt）────────────────────────────────────
-        if target_lang not in LT_PROMPTS:
-            raise ValueError(f"Unsupported target language: {target_lang}")
-
         translations = translate_batch(
             segments        = [{"index": i, "text": p} for i, p in enumerate(paragraphs)],
-            prompt_template = LT_PROMPTS[target_lang],
+            prompt_template = LT_PROMPT,
             source_lang     = source_lang,
+            target_lang     = target_lang,
             batch_size      = 3,  # smaller batches for literary quality
             support_files   = support_files,
         )
