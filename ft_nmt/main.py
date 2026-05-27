@@ -35,12 +35,28 @@ Rules:
 4. Cultural terms without {target_lang} equivalents: keep the original with a brief parenthetical explanation
 5. Tailo romanization markers may be kept in parentheses where helpful (e.g., tshit-thô)
 6. Output only the translation, no explanations or preamble
-{term_injection}
+{hanzi_instruction}{term_injection}
 
 Source (Taiwanese):
 {source_text}
 
 {target_lang} translation:"""
+
+
+def _get_hanzi_instruction(target_lang: str) -> str:
+    """Return extra instruction for Hanzi output when target is tai-lo."""
+    if target_lang != "tai-lo":
+        return ""
+    return (
+        "7. CRITICAL — Taiwanese Hokkien output MUST be written in Han characters (台語漢字), "
+        "NOT in Pe̍h-ōe-jī romanization.\n"
+        "   Correct examples: 我 (not góa), 的 (not ê), 是 (not sī), 有 (not ū), 人 (not lâng), "
+        "愛 (not ài), 講 (not kóng), 看 (not khòaⁿ), 這 (not che), 佇 (not tī).\n"
+        "   Use Tailo romanization ONLY in parentheses after the Han form for terms without "
+        "standard Han characters (e.g., 泅水 (siû-chúi)).\n"
+        "   IMPORTANT: Pure romanization output will be rejected. You must produce Han-dominant text "
+        "readable by native Taiwanese speakers.\n"
+    )
 
 
 def build_term_injection(terms: dict, target_lang: str) -> str:
@@ -62,6 +78,22 @@ def _cjk_overlap(src: str, tgt: str) -> float:
     return sum(1 for c in src_cjk if c in tgt_set) / len(src_cjk)
 
 
+def _has_sufficient_hanzi(text: str, threshold: float = 0.15) -> bool:
+    """Check if a tai-lo output has enough Han characters vs pure romanization.
+    
+    Returns True if at least `threshold` proportion of content chars are CJK.
+    """
+    if not text.strip():
+        return True
+    cjk = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
+    # Count only meaningful characters (exclude spaces, punctuation, digits)
+    content_chars = re.sub(r"[\s\d\W_]", "", text)
+    if not content_chars:
+        return False
+    hanzi_count = len(cjk.findall(content_chars))
+    return hanzi_count / len(content_chars) >= threshold
+
+
 RETRY_PROMPT = """CRITICAL: The previous attempt failed to translate the text properly — it still contains Chinese characters instead of {target_lang}.
 
 Please translate the following Taiwanese text to natural, readable {target_lang} again.
@@ -71,7 +103,7 @@ Rules:
 1. Output ONLY the translation, no explanations
 2. Do NOT keep original Chinese characters (romanization in parentheses is OK)
 3. Preserve paragraph structure exactly
-
+{hanzi_instruction}
 Source (Taiwanese):
 {source_text}
 
@@ -86,7 +118,11 @@ def translate_single(
     max_retries: int = 2,
 ) -> str:
     """Translate one segment with retry if partial_untranslated detected."""
-    prompt = prompt_template.format(source_text=source_text, term_injection=term_inj, target_lang=target_lang)
+    hanzi_instr = _get_hanzi_instruction(target_lang)
+    prompt = prompt_template.format(
+        source_text=source_text, term_injection=term_inj,
+        target_lang=target_lang, hanzi_instruction=hanzi_instr,
+    )
 
     for attempt in range(max_retries + 1):
         response = translate(prompt)
@@ -96,12 +132,23 @@ def translate_single(
         result = parts[0] if parts else response.strip()
 
         if attempt < max_retries and len(source_text) > 50:
+            should_retry = False
             overlap = _cjk_overlap(source_text, result)
             if overlap > 0.5:
                 logger.warning(
                     f"Segment partial untranslated (overlap={overlap:.0%}), retrying {attempt + 1}/{max_retries}"
                 )
-                prompt = RETRY_PROMPT.format(source_text=source_text, target_lang=target_lang)
+                should_retry = True
+            if target_lang == "tai-lo" and not _has_sufficient_hanzi(result):
+                logger.warning(
+                    f"Tai-lo output lacks Han characters (hanzi ratio too low), retrying {attempt + 1}/{max_retries}"
+                )
+                should_retry = True
+            if should_retry:
+                prompt = RETRY_PROMPT.format(
+                    source_text=source_text, target_lang=target_lang,
+                    hanzi_instruction=_get_hanzi_instruction(target_lang),
+                )
                 continue
 
         return result
@@ -114,6 +161,7 @@ def translate_batch(segments: list[dict], prompt_template: str,
                     batch_size: int = 5) -> list[str]:
     results = [""] * len(segments)
     term_inj = build_term_injection(terms, target_lang)
+    hanzi_instr = _get_hanzi_instruction(target_lang)
 
     # Patterns that indicate LLM preamble text (not actual translation)
     PREAMBLE_RE = re.compile(
@@ -131,9 +179,10 @@ def translate_batch(segments: list[dict], prompt_template: str,
         )
 
         prompt = prompt_template.format(
-            source_text    = combined,
-            term_injection = term_inj,
-            target_lang    = target_lang,
+            source_text       = combined,
+            term_injection    = term_inj,
+            target_lang       = target_lang,
+            hanzi_instruction = hanzi_instr,
         )
 
         response = translate(prompt)
@@ -193,6 +242,11 @@ def translate_batch(segments: list[dict], prompt_template: str,
         # ── Assign to results ──
         for k, part in enumerate(parts[:len(batch)]):
             results[i + k] = part
+            if target_lang == "tai-lo" and not _has_sufficient_hanzi(part):
+                logger.warning(
+                    f"Segment {i+k} in batch {i//batch_size + 1} has insufficient Han characters "
+                    f"(tai-lo target) — prompt may need strengthening"
+                )
 
         for k in range(len(parts), len(batch)):
             results[i + k] = ""

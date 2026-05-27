@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config  import cfg
-from shared.db      import update_job_status, get_order_info, update_order_field, get_db
+from shared.db      import update_job_status, get_order_info, update_order_field, get_db, get_lang_labels
 from shared.storage import read_temp_json, write_output
 from shared.gemini  import judge
 
@@ -26,15 +26,13 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("ft_deliver")
 
 
-LANG_LABELS = {
-    "tai-lo":     "台語（台羅拼音）",
-    "hakka":      "客語",
-    "indigenous": "原住民族語",
-    "zh-tw":      "繁體中文",
-    "en":         "English",
-    "ja":         "日本語",
-    "ko":         "한국어",
-}
+LANG_LABELS = get_lang_labels("zh")
+
+
+def format_plain_text(translations: list[dict]) -> str:
+    """產生純文字譯文（無 header/footer/metadata，僅譯文段落）。"""
+    paras = [trans["translated"] for trans in sorted(translations, key=lambda x: x["index"])]
+    return "\n\n".join(paras)
 
 
 def format_txt(translations: list[dict], metadata: dict) -> str:
@@ -121,6 +119,67 @@ def format_html(translations: list[dict], metadata: dict,
 </main>
 <footer>
   本譯文由 OTS 翻譯服務（AI 輔助翻譯）提供。
+  如有疑問請聯繫 service@ots.tw
+</footer>
+</body>
+</html>"""
+
+
+def format_bilingual_html(translations: list[dict], metadata: dict) -> str:
+    """產生原文＋譯文對照 HTML（左右雙欄）"""
+    order    = metadata.get("order_id", "")
+    src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), metadata.get("source_lang", ""))
+    tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), metadata.get("target_lang", ""))
+    now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    rows_html = "\n".join(
+        f"""<tr>
+  <td class='src'>{trans['source']}</td>
+  <td class='tgt'>{trans['translated']}</td>
+</tr>"""
+        for trans in sorted(translations, key=lambda x: x["index"])
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="{metadata.get('target_lang', 'en')}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OTS 翻譯對照 — {order}</title>
+<style>
+  body {{ font-family: Georgia, serif; max-width: 1000px; margin: 0 auto; padding: 2rem; color: #333; }}
+  header {{ border-bottom: 2px solid #1F497D; padding-bottom: 1rem; margin-bottom: 2rem; }}
+  h1 {{ color: #1F497D; font-size: 1.4rem; margin-bottom: 0.5rem; }}
+  .meta {{ color: #666; font-size: 0.9rem; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th {{ background: #f5f5f5; padding: 10px 12px; text-align: left; font-size: 0.85rem; color: #666; border-bottom: 2px solid #1F497D; }}
+  td {{ padding: 10px 12px; border-bottom: 1px solid #eee; vertical-align: top; line-height: 1.8; text-align: justify; }}
+  .src {{ width: 50%; background: #fafafa; }}
+  .tgt {{ width: 50%; }}
+  footer {{ margin-top: 3rem; border-top: 1px solid #ccc; padding-top: 1rem; color: #999; font-size: 0.8rem; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>OTS 翻譯服務 — 原文／譯文對照</h1>
+  <div class="meta">
+    <span>訂單：{order}</span> &nbsp;|&nbsp;
+    <span>{src_lang} → {tgt_lang}</span> &nbsp;|&nbsp;
+    <span>{now}</span>
+  </div>
+</header>
+<main>
+<table>
+<thead>
+  <tr><th>原文（{src_lang}）</th><th>譯文（{tgt_lang}）</th></tr>
+</thead>
+<tbody>
+{rows_html}
+</tbody>
+</table>
+</main>
+<footer>
+  本對照譯文由 OTS 翻譯服務（AI 輔助翻譯）提供。
   如有疑問請聯繫 service@ots.tw
 </footer>
 </body>
@@ -228,9 +287,11 @@ def run():
         order = get_order_info()
         logger.info(f"Formatting output: {len(translations)} segments")
 
-        # ── 產生兩種格式 ──────────────────────────────────────────────────
+        # ── 產生三種格式 ──────────────────────────────────────────────────
         txt_content  = format_txt(translations, metadata)
         html_content = format_html(translations, metadata, qa_result)
+        bilingual_content = format_bilingual_html(translations, metadata)
+        plain_content = format_plain_text(translations)
 
         # ── 上傳到 GCS outputs ────────────────────────────────────────────
         order_short  = cfg.ORDER_ID[:8]
@@ -239,9 +300,13 @@ def run():
 
         txt_path  = write_output(f"translation_{tgt_lang}_{now_str}.txt",  txt_content,  "text/plain")
         html_path = write_output(f"translation_{tgt_lang}_{now_str}.html", html_content, "text/html")
+        bilingual_path = write_output(f"translation_{tgt_lang}_{now_str}_bilingual.html", bilingual_content, "text/html")
+        plain_path = write_output(f"translation_{tgt_lang}_{now_str}_plain.txt", plain_content, "text/plain")
 
         # 主要交付使用 HTML 格式
         update_order_field("gcs_output_path", html_path)
+        update_order_field("gcs_bilingual_output_path", bilingual_path)
+        update_order_field("gcs_plain_text_output_path", plain_path)
 
         # ── 判斷 QA 分數是否達標 ──────────────────────────────────────────
         llm_score = None

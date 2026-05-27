@@ -18,22 +18,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config  import cfg
-from shared.db      import update_job_status, get_order_info, update_order_field, get_db, get_sample_package
+from shared.db import update_job_status, get_order_info, update_order_field, get_lang_labels, get_db, get_sample_package
 from shared.storage import read_temp_json, write_output
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("lt_deliver")
 
-LANG_LABELS = {
-    "tai-lo":     "台語（台羅拼音）",
-    "hakka":      "客語",
-    "indigenous": "原住民族語",
-    "zh-tw":      "繁體中文",
-    "en":         "English",
-    "ja":         "日本語",
-    "ko":         "한국어",
-}
+LANG_LABELS = get_lang_labels("zh")
 
 _LABEL_TRANSLATIONS: dict[str, dict[str, str]] = {
     "zh-tw": {
@@ -177,6 +169,12 @@ def _md_to_html(text: str) -> str:
         else:
             paragraphs.append(f'<p>{block}</p>')
     return '\n'.join(paragraphs)
+
+
+def format_plain_text(translations: list[dict]) -> str:
+    """產生純文字譯文（無 header/footer/metadata，僅譯文段落）。"""
+    paras = [trans["translated"] for trans in sorted(translations, key=lambda x: x["index"])]
+    return "\n\n".join(paras)
 
 
 def format_txt(translations: list[dict], metadata: dict,
@@ -364,6 +362,99 @@ def format_html(translations: list[dict], metadata: dict,
 </html>"""
 
 
+def format_bilingual_html(translations: list[dict], metadata: dict,
+                          sample_pkg: dict | None = None) -> str:
+    """產生原文＋譯文對照 HTML（左右雙欄）"""
+    order    = metadata.get("order_id", "")
+    src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), metadata.get("source_lang", ""))
+    tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), metadata.get("target_lang", ""))
+    tgt_code = metadata.get("target_lang", "zh-tw")
+    now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    pkg_html = ""
+    if sample_pkg:
+        parts = []
+        bfs = sample_pkg.get("book_fact_sheet") or {}
+        if isinstance(bfs, str):
+            bfs = __import__("json").loads(bfs)
+        fact_rows = ""
+        for orig_k, tgt_k, label_key in _FIELD_LABELS:
+            orig_v = bfs.get(orig_k, "")
+            tgt_v  = bfs.get(tgt_k, "")
+            label = _l10n(tgt_code, label_key)
+            if orig_v or tgt_v:
+                fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>{label}</td><td style='padding:4px 8px;font-size:0.9rem'>{orig_v}</td><td style='padding:4px 8px;font-size:0.9rem'>{tgt_v}</td></tr>\n"
+        wc = bfs.get("word_count", "")
+        if wc:
+            fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>{_l10n(tgt_code, 'word_count')}</td><td colspan='2' style='padding:4px 8px;font-size:0.9rem'>{wc}</td></tr>\n"
+
+        if fact_rows:
+            parts.append(f"""
+<div style='margin-bottom:2rem'>
+<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'book_fact_sheet')}</h2>
+<table style='width:100%;border-collapse:collapse'>
+<thead><tr style='border-bottom:1px solid #ddd'><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'field')}</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'original')}</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'translation')}</th></tr></thead>
+<tbody>
+{fact_rows}
+</tbody>
+</table>
+</div>""")
+
+    rows_html = "\n".join(
+        f"""<tr>
+  <td class='src'>{trans['source']}</td>
+  <td class='tgt'>{trans['translated']}</td>
+</tr>"""
+        for trans in sorted(translations, key=lambda x: x["index"])
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="{tgt_code}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{_l10n(tgt_code, 'title')}（對照版） — {order}</title>
+<style>
+  body {{ font-family: Georgia, serif; max-width: 1000px; margin: 0 auto; padding: 2rem; color: #333; }}
+  header {{ border-bottom: 2px solid #8B5CF6; padding-bottom: 1rem; margin-bottom: 2rem; }}
+  h1 {{ color: #8B5CF6; font-size: 1.4rem; margin-bottom: 0.5rem; }}
+  .meta {{ color: #666; font-size: 0.9rem; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th {{ background: #f5f5f5; padding: 10px 12px; text-align: left; font-size: 0.85rem; color: #666; border-bottom: 2px solid #8B5CF6; }}
+  td {{ padding: 10px 12px; border-bottom: 1px solid #eee; vertical-align: top; line-height: 1.8; text-align: justify; }}
+  .src {{ width: 50%; background: #fafafa; }}
+  .tgt {{ width: 50%; }}
+  footer {{ margin-top: 3rem; border-top: 1px solid #ccc; padding-top: 1rem; color: #999; font-size: 0.8rem; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>{_l10n(tgt_code, 'title')}（原文／譯文對照）</h1>
+  <div class="meta">
+    <span>{_l10n(tgt_code, 'order')}：{order}</span> &nbsp;|&nbsp;
+    <span>{_l10n(tgt_code, 'lang_dir')}：{src_lang} → {tgt_lang}</span> &nbsp;|&nbsp;
+    <span>{_l10n(tgt_code, 'delivery_date')}：{now}</span>
+  </div>
+</header>
+<main>
+{pkg_html}
+<table>
+<thead>
+  <tr><th>{_l10n(tgt_code, 'original')}（{src_lang}）</th><th>{_l10n(tgt_code, 'translation')}（{tgt_lang}）</th></tr>
+</thead>
+<tbody>
+{rows_html}
+</tbody>
+</table>
+</main>
+<footer>
+  {_l10n(tgt_code, 'footer')}<br>
+  {_l10n(tgt_code, 'footer_contact')}
+</footer>
+</body>
+</html>"""
+
+
 def write_corpus(translations: list[dict], metadata: dict):
     """寫入 BigQuery 語料（track_type = "literary"）。"""
     from sqlalchemy import text as sqla_text
@@ -461,6 +552,8 @@ def run():
 
         txt_content  = format_txt(translations, metadata, sample_pkg)
         html_content = format_html(translations, metadata, qa_result, sample_pkg)
+        bilingual_content = format_bilingual_html(translations, metadata, sample_pkg)
+        plain_content = format_plain_text(translations)
 
         order_short  = cfg.ORDER_ID[:8]
         tgt_lang     = metadata.get("target_lang", "en")
@@ -468,8 +561,12 @@ def run():
 
         txt_path  = write_output(f"translation_{tgt_lang}_{now_str}.txt",  txt_content,  "text/plain")
         html_path = write_output(f"translation_{tgt_lang}_{now_str}.html", html_content, "text/html")
+        bilingual_path = write_output(f"translation_{tgt_lang}_{now_str}_bilingual.html", bilingual_content, "text/html")
+        plain_path = write_output(f"translation_{tgt_lang}_{now_str}_plain.txt", plain_content, "text/plain")
 
         update_order_field("gcs_output_path", html_path)
+        update_order_field("gcs_bilingual_output_path", bilingual_path)
+        update_order_field("gcs_plain_text_output_path", plain_path)
 
         from sqlalchemy import text as sqla_text
         with get_db() as db:

@@ -19,10 +19,11 @@ logger = logging.getLogger(__name__)
 BACKEND = os.environ.get("TRANSLATION_BACKEND", "gemini")  # gemini | claude
 
 _genai_client = None
+_new_genai_client = None
 
 
 def _get_genai_client():
-    """初始化 Google AI genai client（單例）"""
+    """初始化舊版 Google AI genai client（google.generativeai，單例）"""
     global _genai_client
     if _genai_client is not None:
         return _genai_client
@@ -36,6 +37,22 @@ def _get_genai_client():
     genai.configure(api_key=api_key)
     _genai_client = genai
     return _genai_client
+
+
+def _get_new_genai_client():
+    """初始化新版 Google AI genai client（google.genai，單例，用於 File Search）"""
+    global _new_genai_client
+    if _new_genai_client is not None:
+        return _new_genai_client
+
+    from google import genai as genai_new
+
+    api_key = os.environ.get("GOOGLE_AI_API_KEY", "")
+    if not api_key:
+        raise ValueError("GOOGLE_AI_API_KEY environment variable is required")
+
+    _new_genai_client = genai_new.Client(api_key=api_key)
+    return _new_genai_client
 
 
 def upload_file_to_gemini(data: bytes, display_name: str, mime_type: str):
@@ -81,7 +98,9 @@ def call_gemini(
     """
     呼叫 Google AI Gemini（genai SDK）。
     支援傳入 File 物件（genai.upload_file 回傳值）作為附加上下文。
-    失敗時自動 retry 3 次（指數退避）。
+
+    使用 count_tokens API 在送出前檢查是否超過模型 context window。
+    若超過則立即 raise ValueError("TOKEN_LIMIT: ...") 讓呼叫端縮減輸入。
     """
     genai = _get_genai_client()
     model_name = model or cfg.GEMINI_PRO_MODEL
@@ -91,22 +110,162 @@ def call_gemini(
         "temperature": 0.1,
     }
 
+    # ── 預先計算 token 數量 ──
+    m = genai.GenerativeModel(model_name)
+    contents = []
+    if files:
+        contents.extend(files)
+    contents.append(prompt)
+    try:
+        token_count = m.count_tokens(contents)
+        if token_count.total_tokens > 950_000:
+            raise ValueError(
+                f"TOKEN_LIMIT: input {token_count.total_tokens} tokens exceeds safe limit "
+                f"(model max ~1,048,576, leaving room for output)"
+            )
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.warning(f"count_tokens failed (non-fatal): {e}")
+
     for attempt in range(3):
         try:
-            m = genai.GenerativeModel(model_name)
-            contents = []
-            if files:
-                contents.extend(files)
-            contents.append(prompt)
             resp = m.generate_content(contents, generation_config=generation_config)
             return resp.text
         except Exception as e:
+            err_str = str(e)
+            if "exceeds the maximum number of tokens" in err_str:
+                raise ValueError(f"TOKEN_LIMIT: {err_str}") from e
             wait = 2 ** attempt * 5
             logger.warning(f"Gemini attempt {attempt+1} failed: {e}. Retrying in {wait}s")
             if attempt < 2:
                 time.sleep(wait)
             else:
                 raise
+
+
+# ── File Search helpers (新版 google.genai SDK) ─────────────────────────────────
+
+
+def create_file_search_store(order_id: str) -> str:
+    """Create a File Search Store for this order. Returns the fully qualified store name."""
+    client = _get_new_genai_client()
+    from google.genai import types
+
+    display_name = f"ots-order-{order_id}-{cfg.ENV}"
+    logger.info(f"Creating File Search Store: {display_name}")
+
+    store = client.file_search_stores.create(
+        config={
+            "display_name": display_name,
+            "embedding_model": "models/gemini-embedding-2",
+        }
+    )
+    logger.info(f"File Search Store created: {store.name}")
+    return store.name
+
+
+def upload_to_file_search_store(store_name: str, data: bytes, display_name: str, mime_type: str = "text/plain"):
+    """Upload a support file to the File Search Store."""
+    client = _get_new_genai_client()
+
+    ext = Path(display_name).suffix or ".txt"
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    logger.info(f"Uploading {display_name} ({len(data)} bytes) to File Search Store: {store_name}")
+    try:
+        op = client.file_search_stores.upload_to_file_search_store(
+            file=tmp_path,
+            file_search_store_name=store_name,
+            config={"display_name": display_name},
+        )
+        if op.done:
+            if getattr(op, "error", None):
+                raise RuntimeError(f"Upload failed for {display_name}: {op.error}")
+        else:
+            while True:
+                time.sleep(3)
+                op = client.operations.get(op)
+                if op.done:
+                    if getattr(op, "error", None):
+                        raise RuntimeError(f"Upload failed for {display_name}: {op.error}")
+                    break
+        logger.info(f"File uploaded to File Search Store: {display_name}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def call_gemini_with_file_search(
+    prompt: str,
+    store_name: str,
+    model: str | None = None,
+    max_tokens: int = 8192,
+) -> str:
+    """
+    Generate content using the File Search tool for RAG context retrieval.
+    Uses the new google.genai SDK. Supports count_tokens pre-flight.
+    """
+    client = _get_new_genai_client()
+    from google.genai import types
+
+    model_name = model or cfg.GEMINI_PRO_MODEL
+
+    # ── count_tokens pre-flight ──
+    token_count = client.models.count_tokens(
+        model=model_name,
+        contents=prompt,
+    )
+    if token_count.total_tokens > 950_000:
+        raise ValueError(
+            f"TOKEN_LIMIT: input {token_count.total_tokens} tokens exceeds safe limit "
+            f"(model max ~1,048,576, leaving room for output)"
+        )
+
+    config = types.GenerateContentConfig(
+        max_output_tokens=max_tokens,
+        temperature=0.1,
+        tools=[
+            types.Tool(
+                file_search=types.FileSearch(
+                    file_search_store_names=[store_name],
+                )
+            )
+        ],
+    )
+
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=config,
+            )
+            return response.text
+        except Exception as e:
+            err_str = str(e)
+            if "TOKEN_LIMIT" in err_str or "exceeds the maximum number of tokens" in err_str:
+                raise ValueError(f"TOKEN_LIMIT: {err_str}") from e
+            wait = 2 ** attempt * 5
+            logger.warning(f"Gemini w/FileSearch attempt {attempt+1} failed: {e}. Retrying in {wait}s")
+            if attempt < 2:
+                time.sleep(wait)
+            else:
+                raise
+
+
+def delete_file_search_store(store_name: str):
+    """Delete a File Search Store."""
+    try:
+        client = _get_new_genai_client()
+        client.file_search_stores.delete(name=store_name)
+        logger.info(f"Deleted File Search Store: {store_name}")
+    except Exception as e:
+        logger.warning(f"Failed to delete File Search Store {store_name}: {e}")
 
 
 def call_claude(prompt: str, max_tokens: int = 8192) -> str:
@@ -126,17 +285,25 @@ def translate(
     model: str | None = None,
     max_tokens: int = 8192,
     files: list | None = None,
+    store_name: str | None = None,
 ) -> str:
     """
     翻譯入口。
     TRANSLATION_BACKEND=gemini（預設）→ Google AI Gemini
     TRANSLATION_BACKEND=claude         → Claude（備援）
+
+    若傳入 store_name，則使用 File Search（RAG）而非 raw File API 附件。
     """
     if BACKEND == "claude":
         if files:
             logger.warning("Claude backend does not support file attachments; skipping support files")
+        if store_name:
+            logger.warning("Claude backend does not support File Search; skipping RAG context")
         logger.info("Using Claude backend (fallback mode)")
         return call_claude(prompt, max_tokens)
+
+    if store_name:
+        return call_gemini_with_file_search(prompt, store_name, model, max_tokens)
     return call_gemini(prompt, model, max_tokens, files)
 
 

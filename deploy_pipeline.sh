@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OTS — Fast Track Pipeline Jobs 部署腳本
+# OTS — Pipeline Jobs 部署腳本
 # =============================================================================
-# 建置並部署 4 個 Cloud Run Jobs：
-#   ots-ft-preprocess, ots-ft-nmt, ots-ft-qa-auto, ots-ft-deliver
-#
-# 使用方式：./deploy_pipeline.sh [dev|staging|production]
+# 使用方式：
+#   ./deploy_pipeline.sh [env]            部署全部 7 個 Jobs
+#   ./deploy_pipeline.sh [env] ft         僅部署 Fast Track (4 個)
+#   ./deploy_pipeline.sh [env] lt         僅部署 Literary Track (3 個)
+#   ./deploy_pipeline.sh [env] ots-ft-nmt 部署單一 Job (by name/key)
+#   ./deploy_pipeline.sh [env] nmt        部署單一 Job (by short key)
 # =============================================================================
 
 set -euo pipefail
@@ -19,6 +21,8 @@ err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 ENV="${1:-}"
 [[ "$ENV" =~ ^(dev|staging|production)$ ]] || \
   err "請指定環境：./deploy_pipeline.sh [dev|staging|production]"
+
+FILTER="${2:-}"
 
 PROJECT_ID="ots-translation"
 REGION="asia-east1"
@@ -44,10 +48,14 @@ JOBS=(
 echo ""
 echo -e "${CYAN}=====================================================${NC}"
 echo -e "${CYAN}  OTS Pipeline Deploy — ENV: ${YELLOW}${ENV}${NC}"
+if [[ -n "$FILTER" ]]; then
+  echo -e "${CYAN}  Filter: ${YELLOW}${FILTER}${NC}"
+fi
 echo -e "${CYAN}=====================================================${NC}"
 echo ""
 
 # ── 授予 Pipeline SA 必要的 Vertex AI 權限 ───────────────────────────────────
+# Permissions are global — only grant if deploying at least one job
 log "啟用 Vertex AI API 並確認 Pipeline SA 權限..."
 gcloud services enable aiplatform.googleapis.com --project="$PROJECT_ID" --quiet
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
@@ -58,8 +66,26 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 ok "Vertex AI 權限確認完成"
 
 # ── 建置並部署每個 Job ────────────────────────────────────────────────────────
+deployed=0
 for job_spec in "${JOBS[@]}"; do
   IFS=':' read -r job_key job_name job_dir job_tier <<< "$job_spec"
+
+  # ── Filter logic ──────────────────────────────────────────────────────────
+  if [[ -n "$FILTER" ]]; then
+    case "$FILTER" in
+      ft)  # Fast Track only
+        [[ "$job_key" == lt_* ]] && continue
+        ;;
+      lt)  # Literary Track only
+        [[ "$job_key" != lt_* ]] && continue
+        ;;
+      *)   # Match by exact job_key or substring of job_name
+        if [[ "$job_key" != "$FILTER" && "$job_name" != *"$FILTER"* ]]; then
+          continue
+        fi
+        ;;
+    esac
+  fi
 
   log "Building image for ${job_name}..."
   IMAGE="${REGISTRY}/${job_name}:latest"
@@ -153,6 +179,7 @@ CLOUDBUILD
       --quiet
   fi
 
+  deployed=$((deployed + 1))
   ok "Job deployed: ${job_name}"
   echo ""
 done
@@ -160,11 +187,24 @@ done
 # ── 輸出摘要 ──────────────────────────────────────────────────────────────────
 echo -e "${GREEN}=====================================================${NC}"
 echo -e "${GREEN}  Pipeline 部署完成 — ENV: ${YELLOW}${ENV}${NC}"
+if [[ -n "$FILTER" ]]; then
+  echo -e "${GREEN}  Filter: ${YELLOW}${FILTER}${NC}"
+fi
 echo -e "${GREEN}=====================================================${NC}"
 echo ""
-echo "  部署的 Jobs："
+if [[ "$deployed" -eq 0 ]]; then
+  echo -e "${YELLOW}  警告：沒有符合篩選條件的 Job — 名稱可能錯誤${NC}"
+fi
+echo "  部署的 Jobs（${deployed} 個）："
 for job_spec in "${JOBS[@]}"; do
-  IFS=':' read -r _ job_name _ <<< "$job_spec"
+  IFS=':' read -r job_key job_name _ <<< "$job_spec"
+  if [[ -n "$FILTER" ]]; then
+    case "$FILTER" in
+      ft)  [[ "$job_key" == lt_* ]] && continue ;;
+      lt)  [[ "$job_key" != lt_* ]] && continue ;;
+      *)   [[ "$job_key" != "$FILTER" && "$job_name" != *"$FILTER"* ]] && continue ;;
+    esac
+  fi
   echo "    ${job_name}"
 done
 echo ""

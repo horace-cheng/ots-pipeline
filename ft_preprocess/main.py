@@ -164,6 +164,21 @@ def normalize_text(raw: bytes) -> str:
                 text = raw.decode("utf-8-sig")
             except UnicodeDecodeError:
                 text = raw.decode("big5", errors="replace")
+    # Detect HTML by content signature
+    elif raw[:1] == b"<" and (b"<!DOCTYPE html" in raw[:200].lower() or b"<html" in raw[:200].lower() or b"<head" in raw[:200].lower() or b"<body" in raw[:200].lower()):
+        logger.info("Detected HTML file, stripping tags")
+        from html.parser import HTMLParser
+        class _TagStripper(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self._text = []
+            def handle_data(self, d):
+                if d.strip():
+                    self._text.append(d)
+        text = raw.decode("utf-8-sig", errors="replace")
+        stripper = _TagStripper()
+        stripper.feed(text)
+        text = "\n".join(stripper._text)
     else:
         try:
             text = raw.decode("utf-8-sig")  # 處理 BOM
