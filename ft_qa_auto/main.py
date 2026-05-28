@@ -221,7 +221,7 @@ Source: {src_text[:300]}
 Translation: {tgt_text[:300]}"""
 
         try:
-            response = judge(prompt)
+            response = judge(prompt, job_type="qa_auto")
             # 解析 JSON 回應
             clean = re.sub(r"```json|```", "", response).strip()
             data  = json.loads(clean)
@@ -336,7 +336,7 @@ Segments to evaluate:
 {combined}"""
 
         try:
-            response = judge(prompt)
+            response = judge(prompt, job_type="qa_auto")
             clean    = re.sub(r"```json|```", "", response).strip()
             results  = json.loads(clean)
 

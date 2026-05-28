@@ -283,7 +283,7 @@ def translate_batch(
             )
 
             try:
-                response = translate(prompt, max_tokens=16384, store_name=store_name)
+                response = translate(prompt, max_tokens=16384, store_name=store_name, job_type="lt_preprocess_nmt")
                 break  # success
             except ValueError as e:
                 if not str(e).startswith("TOKEN_LIMIT:"):

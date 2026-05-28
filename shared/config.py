@@ -25,6 +25,18 @@ class PipelineConfig:
     GEMINI_PRO_MODEL:   str = "gemini-2.5-pro"
     GEMINI_FLASH_MODEL: str = "gemini-2.5-flash"
 
+    # Token pricing (USD per 1M tokens)
+    MODEL_PRICING: dict[str, dict[str, float]] = {
+        "gemini-2.5-pro": {
+            "input":  float(os.environ.get("GEMINI_PRO_INPUT_COST", "1.25")),
+            "output": float(os.environ.get("GEMINI_PRO_OUTPUT_COST", "10.00")),
+        },
+        "gemini-2.5-flash": {
+            "input":  float(os.environ.get("GEMINI_FLASH_INPUT_COST", "0.30")),
+            "output": float(os.environ.get("GEMINI_FLASH_OUTPUT_COST", "2.50")),
+        },
+    }
+
     # QA 閾值
     LENGTH_RATIO_MIN_TAI_ZH: float = 0.7
     LENGTH_RATIO_MAX_TAI_ZH: float = 1.1

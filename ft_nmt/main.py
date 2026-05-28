@@ -125,7 +125,7 @@ def translate_single(
     )
 
     for attempt in range(max_retries + 1):
-        response = translate(prompt)
+        response = translate(prompt, job_type="nmt")
 
         parts = re.split(r"\[PARA_SEP\]|\[\d+\]", response)
         parts = [p.strip() for p in parts if p.strip()]
@@ -185,7 +185,7 @@ def translate_batch(segments: list[dict], prompt_template: str,
             hanzi_instruction = hanzi_instr,
         )
 
-        response = translate(prompt)
+        response = translate(prompt, job_type="nmt")
 
         # ── Primary parse: numbered markers [1] [2] ... ──
         # Extract translations by numbered markers — most reliable

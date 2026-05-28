@@ -94,13 +94,16 @@ def call_gemini(
     model: str | None = None,
     max_tokens: int = 8192,
     files: list | None = None,
-) -> str:
+) -> tuple[str, dict]:
     """
     呼叫 Google AI Gemini（genai SDK）。
     支援傳入 File 物件（genai.upload_file 回傳值）作為附加上下文。
 
     使用 count_tokens API 在送出前檢查是否超過模型 context window。
     若超過則立即 raise ValueError("TOKEN_LIMIT: ...") 讓呼叫端縮減輸入。
+
+    Returns (text, usage_dict) where usage_dict has prompt_tokens,
+    candidates_tokens, total_tokens keys.
     """
     genai = _get_genai_client()
     model_name = model or cfg.GEMINI_PRO_MODEL
@@ -131,7 +134,13 @@ def call_gemini(
     for attempt in range(3):
         try:
             resp = m.generate_content(contents, generation_config=generation_config)
-            return resp.text
+            usage = getattr(resp, 'usage_metadata', None)
+            _usage = {
+                "prompt_tokens":     usage.prompt_token_count     if usage else 0,
+                "candidates_tokens": usage.candidates_token_count if usage else 0,
+                "total_tokens":      usage.total_token_count      if usage else 0,
+            } if usage else {"prompt_tokens": 0, "candidates_tokens": 0, "total_tokens": 0}
+            return resp.text, _usage
         except Exception as e:
             err_str = str(e)
             if "exceeds the maximum number of tokens" in err_str:
@@ -205,10 +214,13 @@ def call_gemini_with_file_search(
     store_name: str,
     model: str | None = None,
     max_tokens: int = 8192,
-) -> str:
+) -> tuple[str, dict]:
     """
     Generate content using the File Search tool for RAG context retrieval.
     Uses the new google.genai SDK. Supports count_tokens pre-flight.
+
+    Returns (text, usage_dict) where usage_dict has prompt_tokens,
+    candidates_tokens, total_tokens keys.
     """
     client = _get_new_genai_client()
     from google.genai import types
@@ -245,7 +257,13 @@ def call_gemini_with_file_search(
                 contents=prompt,
                 config=config,
             )
-            return response.text
+            usage = getattr(response, 'usage_metadata', None)
+            _usage = {
+                "prompt_tokens":     usage.prompt_token_count     if usage else 0,
+                "candidates_tokens": usage.candidates_token_count if usage else 0,
+                "total_tokens":      usage.total_token_count      if usage else 0,
+            } if usage else {"prompt_tokens": 0, "candidates_tokens": 0, "total_tokens": 0}
+            return response.text, _usage
         except Exception as e:
             err_str = str(e)
             if "TOKEN_LIMIT" in err_str or "exceeds the maximum number of tokens" in err_str:
@@ -268,8 +286,8 @@ def delete_file_search_store(store_name: str):
         logger.warning(f"Failed to delete File Search Store {store_name}: {e}")
 
 
-def call_claude(prompt: str, max_tokens: int = 8192) -> str:
-    """Claude API 備援"""
+def call_claude(prompt: str, max_tokens: int = 8192) -> tuple[str, dict]:
+    """Claude API 備援（回傳空的 usage dict，不追蹤）"""
     import anthropic
     client = anthropic.Anthropic()
     msg = client.messages.create(
@@ -277,7 +295,7 @@ def call_claude(prompt: str, max_tokens: int = 8192) -> str:
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return msg.content[0].text
+    return msg.content[0].text, {"prompt_tokens": 0, "candidates_tokens": 0, "total_tokens": 0}
 
 
 def translate(
@@ -286,6 +304,7 @@ def translate(
     max_tokens: int = 8192,
     files: list | None = None,
     store_name: str | None = None,
+    job_type: str | None = None,
 ) -> str:
     """
     翻譯入口。
@@ -293,6 +312,7 @@ def translate(
     TRANSLATION_BACKEND=claude         → Claude（備援）
 
     若傳入 store_name，則使用 File Search（RAG）而非 raw File API 附件。
+    若提供 job_type，則自動記錄 token 用量至 DB。
     """
     if BACKEND == "claude":
         if files:
@@ -300,13 +320,39 @@ def translate(
         if store_name:
             logger.warning("Claude backend does not support File Search; skipping RAG context")
         logger.info("Using Claude backend (fallback mode)")
-        return call_claude(prompt, max_tokens)
+        text, _ = call_claude(prompt, max_tokens)
+        return text
 
     if store_name:
-        return call_gemini_with_file_search(prompt, store_name, model, max_tokens)
-    return call_gemini(prompt, model, max_tokens, files)
+        text, usage = call_gemini_with_file_search(prompt, store_name, model, max_tokens)
+    else:
+        text, usage = call_gemini(prompt, model, max_tokens, files)
+
+    if job_type and usage and (usage["prompt_tokens"] or usage["candidates_tokens"]):
+        from shared.db import log_token_usage
+        log_token_usage(
+            job_type=job_type,
+            model=model or cfg.GEMINI_PRO_MODEL,
+            prompt_tokens=usage["prompt_tokens"],
+            candidates_tokens=usage["candidates_tokens"],
+            total_tokens=usage["total_tokens"],
+        )
+
+    return text
 
 
-def judge(prompt: str) -> str:
+def judge(prompt: str, job_type: str | None = None) -> str:
     """LLM-as-Judge 固定用 Gemini Flash（成本低）"""
-    return call_gemini(prompt, model=cfg.GEMINI_FLASH_MODEL, max_tokens=2048)
+    text, usage = call_gemini(prompt, model=cfg.GEMINI_FLASH_MODEL, max_tokens=2048)
+
+    if job_type and usage and (usage["prompt_tokens"] or usage["candidates_tokens"]):
+        from shared.db import log_token_usage
+        log_token_usage(
+            job_type=job_type,
+            model=cfg.GEMINI_FLASH_MODEL,
+            prompt_tokens=usage["prompt_tokens"],
+            candidates_tokens=usage["candidates_tokens"],
+            total_tokens=usage["total_tokens"],
+        )
+
+    return text
