@@ -14,6 +14,7 @@ Literary Track Step 1: Preprocess + NMT (AI Draft)
 import sys, re, unicodedata, logging, zipfile, io, json
 from pathlib import Path
 from xml.etree import ElementTree
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -247,6 +248,7 @@ def translate_batch(
 ) -> list[str]:
     """Translate segments in batches. LT uses smaller batches for higher quality.
 
+    Batches are processed concurrently via ThreadPoolExecutor (max_workers=3).
     When store_name is provided, support file context is retrieved via
     File Search (RAG) — relevant chunks are auto-retrieved per request,
     so every batch gets reference context without consuming the full
@@ -261,13 +263,15 @@ def translate_batch(
         re.IGNORECASE
     )
 
-    i = 0
-    batch_num = 0
     hanzi_instr = _get_hanzi_instruction(target_lang)
-    while i < len(segments):
-        remaining = len(segments) - i
-        cur_size = min(batch_size, remaining)
-        batch = segments[i:i + cur_size]
+
+    # Build batches upfront
+    batches: list[tuple[int, list[dict]]] = []
+    for i in range(0, len(segments), batch_size):
+        batches.append((i, segments[i:i + batch_size]))
+
+    def _process_batch(start_idx: int, batch: list[dict]) -> tuple[int, list[str], int]:
+        """Process a single batch — translate, retry on TOKEN_LIMIT, parse response."""
         batch_slice = list(batch)
 
         while True:
@@ -284,7 +288,7 @@ def translate_batch(
 
             try:
                 response = translate(prompt, max_tokens=16384, store_name=store_name, job_type="lt_preprocess_nmt")
-                break  # success
+                break
             except ValueError as e:
                 if not str(e).startswith("TOKEN_LIMIT:"):
                     raise
@@ -300,11 +304,10 @@ def translate_batch(
         numbered_parts = re.findall(r"\[(\d+)\]\s*(.*?)(?=\[\d+\]|$)", response, re.DOTALL)
         if numbered_parts and len(numbered_parts) == actual_size:
             parts = [p.strip() for _, p in numbered_parts]
-            # Defensive: filter out PARA_SEP markers the LLM sometimes echoes back
             for k in range(len(parts)):
                 if re.match(r'^\[?PARA_SEP\]?$', parts[k], re.IGNORECASE):
                     parts[k] = ""
-                    logger.warning(f"Segment {i+k} contains PARA_SEP marker instead of translation")
+                    logger.warning(f"Segment {start_idx+k} contains PARA_SEP marker instead of translation")
         else:
             first_marker = re.search(r"\n?\[1\]", response)
             clean_response = response[first_marker.end():] if first_marker else response
@@ -334,21 +337,28 @@ def translate_batch(
             if len(fallback) >= actual_size:
                 parts = fallback[:actual_size]
 
-        for k, part in enumerate(parts[:actual_size]):
-            results[i + k] = part
-            if target_lang == "tai-lo" and not _has_sufficient_hanzi(part):
-                logger.warning(
-                    f"Segment {i+k} in batch {batch_num + 1} has insufficient Han characters "
-                    f"(tai-lo target) — prompt may need strengthening"
-                )
+        return start_idx, parts[:actual_size], actual_size
 
-        for k in range(len(parts), actual_size):
-            results[i + k] = ""
-            logger.warning(f"Missing translation for segment {i+k}")
-
-        batch_num += 1
-        logger.info(f"Translated batch {batch_num}: segments {i}–{i+actual_size-1} ({len(segments)} total)")
-        i += actual_size
+    num_workers = min(3, len(batches))
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        fut_map = {executor.submit(_process_batch, si, b): si for si, b in batches}
+        for future in as_completed(fut_map):
+            start_idx, parts, actual_size = future.result()
+            for k, part in enumerate(parts):
+                results[start_idx + k] = part
+                if target_lang == "tai-lo" and not _has_sufficient_hanzi(part):
+                    seg_num = start_idx + k
+                    logger.warning(
+                        f"Segment {seg_num} in batch {(start_idx // batch_size) + 1} has insufficient "
+                        f"Han characters (tai-lo target) — prompt may need strengthening"
+                    )
+            for k in range(len(parts), actual_size):
+                results[start_idx + k] = ""
+                logger.warning(f"Missing translation for segment {start_idx + k}")
+            logger.info(
+                f"Translated batch: segments {start_idx}–{start_idx + actual_size - 1} "
+                f"({len(segments)} total)"
+            )
 
     return results
 

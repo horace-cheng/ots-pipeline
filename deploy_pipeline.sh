@@ -130,9 +130,9 @@ CLOUDBUILD
 
   # 根據 tier 設定資源
   if [[ "$job_tier" == "large" ]]; then
-    MEMORY="4Gi"
+    MEMORY="8Gi"
     CPU="2"
-    TIMEOUT=3600
+    TIMEOUT=7200
   else
     MEMORY="1Gi"
     CPU="1"
