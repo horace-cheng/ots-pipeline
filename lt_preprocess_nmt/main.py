@@ -211,6 +211,7 @@ Rules:
 6. Output ONLY the translations with <<<TRANSLATION_END>>> markers — no explanations, no preamble, no segment numbers. Do NOT add extra text before, after, or between segments.
 7. IMPORTANT: The delimiter <<<TRANSLATION_END>>> must appear on its own line with NO surrounding text. Do NOT embed it inside a translation. Do NOT add extra delimiters or misspell them.
 8. Reference materials (glossaries, style guides, background documents) are attached for translation context — use them to inform terminology and style
+9. Do NOT translate or modify footnote/annotation/remark numbers (e.g., [1], ①, (a), Note 1) — keep them exactly as in the source
 {hanzi_instruction}
 Source text:
 {source_text}
@@ -225,7 +226,7 @@ def _get_hanzi_instruction(target_lang: str) -> str:
     if target_lang != "tai-lo":
         return ""
     return (
-        "9. CRITICAL — Taiwanese Hokkien output MUST be written in Han characters (台語漢字), "
+        "10. CRITICAL — Taiwanese Hokkien output MUST be written in Han characters (台語漢字), "
         "NOT in Pe̍h-ōe-jī romanization.\n"
         "   Correct examples: 我 (not góa), 的 (not ê), 是 (not sī), 有 (not ū), 人 (not lâng), "
         "愛 (not ài), 講 (not kóng), 看 (not khòaⁿ), 這 (not che), 佇 (not tī).\n"
