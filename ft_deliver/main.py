@@ -76,8 +76,11 @@ def format_html(translations: list[dict], metadata: dict,
     tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), "")
     now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    def _html(text: str) -> str:
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+
     para_html = "\n".join(
-        f"<p class='para'>{trans['translated']}</p>"
+        f"<p class='para'>{_html(trans['translated'])}</p>"
         for trans in sorted(translations, key=lambda x: x["index"])
     )
 
@@ -134,8 +137,8 @@ def format_bilingual_html(translations: list[dict], metadata: dict) -> str:
 
     rows_html = "\n".join(
         f"""<tr>
-  <td class='src'>{trans['source']}</td>
-  <td class='tgt'>{trans['translated']}</td>
+  <td class='src'>{_html(trans['source'])}</td>
+  <td class='tgt'>{_html(trans['translated'])}</td>
 </tr>"""
         for trans in sorted(translations, key=lambda x: x["index"])
     )

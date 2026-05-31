@@ -208,8 +208,9 @@ Rules:
 3. Preserve proper nouns, place names, and cultural terms with appropriate romanization
 4. Maintain the original tone (formal, colloquial, poetic, etc.)
 5. Literary devices (metaphor, alliteration, rhythm) should be preserved where possible
-6. Output ONLY the translations with <<<TRANSLATION_END>>> markers — no explanations, no preamble, no segment numbers
-7. Reference materials (glossaries, style guides, background documents) are attached for translation context — use them to inform terminology and style
+6. Output ONLY the translations with <<<TRANSLATION_END>>> markers — no explanations, no preamble, no segment numbers. Do NOT add extra text before, after, or between segments.
+7. IMPORTANT: The delimiter <<<TRANSLATION_END>>> must appear on its own line with NO surrounding text. Do NOT embed it inside a translation. Do NOT add extra delimiters or misspell them.
+8. Reference materials (glossaries, style guides, background documents) are attached for translation context — use them to inform terminology and style
 {hanzi_instruction}
 Source text:
 {source_text}
@@ -389,12 +390,21 @@ def translate_batch(
                 )
 
                 # ── Parse delimiter-separated response ──
-                parsed = re.split(r'<<<TRAN(?:SLATION)?_END?>>>', response)
+                # Match marker variants on their own line only (never inside a segment)
+                parsed = re.split(
+                    r'(?:\n|^)\s*<<<TRAN\w*_?E?N?D?>>>>?\s*(?:\n|$)',
+                    response,
+                )
                 parsed = [p.strip() for p in parsed]
                 if parsed and not parsed[0]:
                     parsed.pop(0)
                 if parsed and not parsed[-1]:
                     parsed.pop(-1)
+
+                # Sanitize: strip any remaining marker fragments from segments
+                _marker_re = re.compile(r'<<<TRAN\w*_?E?N?D?>>>>?', re.IGNORECASE)
+                for j in range(len(parsed)):
+                    parsed[j] = _marker_re.sub('', parsed[j]).strip()
 
                 newly_done: list[int] = []
                 for j, p in enumerate(parsed):
