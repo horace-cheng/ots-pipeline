@@ -8,6 +8,7 @@ Claude API 作為備援，切換由 TRANSLATION_BACKEND 環境變數控制。
 
 import os
 import time
+import random
 import logging
 import io
 import tempfile
@@ -94,6 +95,7 @@ def call_gemini(
     model: str | None = None,
     max_tokens: int = 8192,
     files: list | None = None,
+    response_mime_type: str | None = None,
 ) -> tuple[str, dict]:
     """
     呼叫 Google AI Gemini（genai SDK）。
@@ -101,6 +103,8 @@ def call_gemini(
 
     使用 count_tokens API 在送出前檢查是否超過模型 context window。
     若超過則立即 raise ValueError("TOKEN_LIMIT: ...") 讓呼叫端縮減輸入。
+
+    response_mime_type: "application/json" 啟用 JSON 模式（API 強制輸出合法 JSON）
 
     Returns (text, usage_dict) where usage_dict has prompt_tokens,
     candidates_tokens, total_tokens keys.
@@ -112,6 +116,8 @@ def call_gemini(
         "max_output_tokens": max_tokens,
         "temperature": 0.1,
     }
+    if response_mime_type:
+        generation_config["response_mime_type"] = response_mime_type
 
     # ── 預先計算 token 數量 ──
     m = genai.GenerativeModel(model_name)
@@ -131,7 +137,7 @@ def call_gemini(
     except Exception as e:
         logger.warning(f"count_tokens failed (non-fatal): {e}")
 
-    for attempt in range(3):
+    for attempt in range(6):
         try:
             resp = m.generate_content(contents, generation_config=generation_config)
             usage = getattr(resp, 'usage_metadata', None)
@@ -145,9 +151,9 @@ def call_gemini(
             err_str = str(e)
             if "exceeds the maximum number of tokens" in err_str:
                 raise ValueError(f"TOKEN_LIMIT: {err_str}") from e
-            wait = 2 ** attempt * 5
-            logger.warning(f"Gemini attempt {attempt+1} failed: {e}. Retrying in {wait}s")
-            if attempt < 2:
+            wait = 2 ** attempt * 5 + random.uniform(0, 5)
+            logger.warning(f"Gemini attempt {attempt+1} failed: {e}. Retrying in {wait:.0f}s")
+            if attempt < 5:
                 time.sleep(wait)
             else:
                 raise
@@ -214,13 +220,11 @@ def call_gemini_with_file_search(
     store_name: str,
     model: str | None = None,
     max_tokens: int = 8192,
+    response_mime_type: str | None = None,
 ) -> tuple[str, dict]:
     """
-    Generate content using the File Search tool for RAG context retrieval.
-    Uses the new google.genai SDK. Supports count_tokens pre-flight.
-
-    Returns (text, usage_dict) where usage_dict has prompt_tokens,
-    candidates_tokens, total_tokens keys.
+    使用 File Search（RAG）呼叫 Gemini。
+    自動從 File Search Store 檢索相關上下文。
     """
     client = _get_new_genai_client()
     from google.genai import types
@@ -232,6 +236,12 @@ def call_gemini_with_file_search(
         model=model_name,
         contents=prompt,
     )
+    if token_count.total_tokens > 950_000:
+        raise ValueError(
+            f"TOKEN_LIMIT: input {token_count.total_tokens} tokens exceeds safe limit "
+            f"(model max ~1,048,576, leaving room for output)"
+        )
+
     if token_count.total_tokens > 950_000:
         raise ValueError(
             f"TOKEN_LIMIT: input {token_count.total_tokens} tokens exceeds safe limit "
@@ -250,7 +260,7 @@ def call_gemini_with_file_search(
         ],
     )
 
-    for attempt in range(3):
+    for attempt in range(6):
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -268,9 +278,9 @@ def call_gemini_with_file_search(
             err_str = str(e)
             if "TOKEN_LIMIT" in err_str or "exceeds the maximum number of tokens" in err_str:
                 raise ValueError(f"TOKEN_LIMIT: {err_str}") from e
-            wait = 2 ** attempt * 5
-            logger.warning(f"Gemini w/FileSearch attempt {attempt+1} failed: {e}. Retrying in {wait}s")
-            if attempt < 2:
+            wait = 2 ** attempt * 5 + random.uniform(0, 5)
+            logger.warning(f"Gemini w/FileSearch attempt {attempt+1} failed: {e}. Retrying in {wait:.0f}s")
+            if attempt < 5:
                 time.sleep(wait)
             else:
                 raise
@@ -305,6 +315,7 @@ def translate(
     files: list | None = None,
     store_name: str | None = None,
     job_type: str | None = None,
+    response_mime_type: str | None = None,
 ) -> str:
     """
     翻譯入口。
@@ -313,6 +324,7 @@ def translate(
 
     若傳入 store_name，則使用 File Search（RAG）而非 raw File API 附件。
     若提供 job_type，則自動記錄 token 用量至 DB。
+    response_mime_type: "application/json" 啟用 JSON 模式。
     """
     if BACKEND == "claude":
         if files:
@@ -324,9 +336,9 @@ def translate(
         return text
 
     if store_name:
-        text, usage = call_gemini_with_file_search(prompt, store_name, model, max_tokens)
+        text, usage = call_gemini_with_file_search(prompt, store_name, model, max_tokens, response_mime_type=response_mime_type)
     else:
-        text, usage = call_gemini(prompt, model, max_tokens, files)
+        text, usage = call_gemini(prompt, model, max_tokens, files, response_mime_type=response_mime_type)
 
     if job_type and usage and (usage["prompt_tokens"] or usage["candidates_tokens"]):
         from shared.db import log_token_usage

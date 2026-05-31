@@ -22,7 +22,7 @@ class PipelineConfig:
     BUCKET_TEMP:     str = os.environ.get("GCS_TEMP_BUCKET",     "ots-translation-pipeline-temp-dev")
 
     # Vertex AI / Gemini
-    GEMINI_PRO_MODEL:   str = "gemini-2.5-pro"
+    GEMINI_PRO_MODEL:   str = "gemini-2.5-flash"
     GEMINI_FLASH_MODEL: str = "gemini-2.5-flash"
 
     # Token pricing (USD per 1M tokens)

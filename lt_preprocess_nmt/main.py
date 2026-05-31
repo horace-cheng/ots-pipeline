@@ -11,16 +11,20 @@ Literary Track Step 1: Preprocess + NMT (AI Draft)
 - 更新訂單狀態 → processing（等待 admin 指派編輯）
 """
 
-import sys, re, unicodedata, logging, zipfile, io, json
+import sys, re, unicodedata, logging, zipfile, io, time
 from pathlib import Path
 from xml.etree import ElementTree
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config  import cfg
-from shared.db      import update_job_status, get_order_info, update_order_field, get_db, get_lang_labels
-from shared.storage import read_upload, read_temp_json, write_temp_json
+from shared.db      import update_job_status, get_order_info, update_order_field, get_lang_labels
+from shared.storage import (
+    read_upload, write_temp_json,
+    save_preprocess_artifacts, load_preprocess_artifacts,
+    save_batch_checkpoint, load_batch_checkpoint,
+    aggregate_checkpoints,
+)
 from shared.gemini  import translate, create_file_search_store, upload_to_file_search_store, delete_file_search_store
 
 logging.basicConfig(level=logging.INFO,
@@ -188,8 +192,15 @@ def normalize_text(raw: bytes) -> str:
 # ── 文學翻譯 Prompt ───────────────────────────────────────────────────────────
 LT_PROMPT = """You are a professional literary translator specializing in {source_lang_label} to {target_lang} translation.
 
-Translate the following text with careful attention to literary style, tone, rhythm, and emotional nuance.
-This is a literary work — preserve the author's voice, imagery, and artistic intent.
+Translate the following text. It contains exactly {num_segments} segments, each marked with === SEGMENT N ===.
+
+Translate each segment in order. After EACH translation, output <<<TRANSLATION_END>>> on its own line.
+
+For example:
+Translation of the first segment here. It can span multiple lines.
+<<<TRANSLATION_END>>>
+Translation of the second segment here.
+<<<TRANSLATION_END>>>
 
 Rules:
 1. Preserve paragraph structure exactly — do not merge or split paragraphs
@@ -197,14 +208,13 @@ Rules:
 3. Preserve proper nouns, place names, and cultural terms with appropriate romanization
 4. Maintain the original tone (formal, colloquial, poetic, etc.)
 5. Literary devices (metaphor, alliteration, rhythm) should be preserved where possible
-6. Output only the translation, no explanations or preamble
+6. Output ONLY the translations with <<<TRANSLATION_END>>> markers — no explanations, no preamble, no segment numbers
 7. Reference materials (glossaries, style guides, background documents) are attached for translation context — use them to inform terminology and style
-8. Output ONLY the translations, one per numbered segment, in order. Do NOT include any separator markers like [PARA_SEP] or the segment numbers in your output.
 {hanzi_instruction}
 Source text:
 {source_text}
 
-{target_lang} translation:"""
+{target_lang} translations:"""
 
 LANG_LABELS = get_lang_labels("en")
 
@@ -237,130 +247,219 @@ def _has_sufficient_hanzi(text: str, threshold: float = 0.15) -> bool:
     return hanzi_count / len(content_chars) >= threshold
 
 
-# ── 分批翻譯（大型檔案支援）────────────────────────────────────────────────────
+# ── 批次建構 ───────────────────────────────────────────────────────────────────
+def build_batches(
+    segments: list[dict],
+    max_batch_words: int = 2000,
+    batch_size: int = 15,
+) -> list[dict]:
+    """Build deterministic batch boundaries from segments.
+
+    Batches are formed by word count (max_batch_words) capped by max segment
+    count (batch_size), whichever is hit first — short segments pack densely,
+    long segments get their own batch.
+
+    **batch_size=15** is the empirically verified maximum the Gemini model
+    can reliably translate in a single API call. Batch sizes >15 produce
+    truncated output (finish_reason=2) with <50% completion.
+
+    Returns list of dicts:
+        [{"batch_id": 0, "start": 0, "count": 5}, ...]
+    """
+    batches: list[dict] = []
+    current_segs: list[dict] = []
+    current_words = 0
+    next_start = 0
+    batch_id = 0
+
+    for i, seg in enumerate(segments):
+        seg_words = len(seg['text'].split())
+        if current_segs and (current_words + seg_words > max_batch_words or len(current_segs) >= batch_size):
+            batches.append({
+                "batch_id": batch_id,
+                "start":    next_start,
+                "count":    len(current_segs),
+            })
+            batch_id += 1
+            current_segs = []
+            current_words = 0
+            next_start = i
+        current_segs.append(seg)
+        current_words += seg_words
+
+    if current_segs:
+        batches.append({
+            "batch_id": batch_id,
+            "start":    next_start,
+            "count":    len(current_segs),
+        })
+
+    return batches
+
+
+# ── 分批翻譯（順序執行 + 每批獨立 Checkpoint）─────────────────────────────
 def translate_batch(
     segments: list[dict],
     prompt_template: str,
     source_lang: str,
     target_lang: str,
-    batch_size: int = 3,
+    batches: list[dict],
     store_name: str | None = None,
-) -> list[str]:
-    """Translate segments in batches. LT uses smaller batches for higher quality.
+) -> None:
+    """Translate all batches sequentially with per-batch checkpointing.
 
-    Batches are processed concurrently via ThreadPoolExecutor (max_workers=3).
-    When store_name is provided, support file context is retrieved via
-    File Search (RAG) — relevant chunks are auto-retrieved per request,
-    so every batch gets reference context without consuming the full
-    file token budget.
+    ``batches`` is never mutated — iteration is a simple ``for`` loop.
+    If ``checkpoint_batch_{id}.json`` exists with matching ``count``/``start``
+    the batch is skipped (resume).  Stale checkpoints are ignored.
+
+    Each failed batch is retried up to 4 times.  If all attempts fail no
+    checkpoint is written — ``aggregate_checkpoints`` will raise.
     """
-    results = [""] * len(segments)
-
-    PREAMBLE_RE = re.compile(
-        r'^(here are|following|below|sure|certainly|of course|'
-        r'here is|here\'s|below is|the following|'
-        r'以下是|好的|當然|翻譯如下)',
-        re.IGNORECASE
-    )
-
+    total = len(segments)
     hanzi_instr = _get_hanzi_instruction(target_lang)
 
-    # Build batches upfront
-    batches: list[tuple[int, list[dict]]] = []
-    for i in range(0, len(segments), batch_size):
-        batches.append((i, segments[i:i + batch_size]))
+    logger.info(
+        f"translate_batch: {len(batches)} total batches, "
+        f"first 3: {[(b['batch_id'], b['start'], b['count']) for b in batches[:3]]}, "
+        f"last 3: {[(b['batch_id'], b['start'], b['count']) for b in batches[-3:]]}"
+    )
 
-    def _process_batch(start_idx: int, batch: list[dict]) -> tuple[int, list[str], int]:
-        """Process a single batch — translate, retry on TOKEN_LIMIT, parse response."""
-        batch_slice = list(batch)
+    for batch in batches:
+        batch_id = batch["batch_id"]
+        start   = batch["start"]
+        count   = batch["count"]
 
-        while True:
-            combined = "\n\n[PARA_SEP]\n\n".join(
-                f"[{j+1}] {seg['text']}" for j, seg in enumerate(batch_slice)
+        # ── Skip if valid checkpoint already exists ──
+        existing = load_batch_checkpoint(batch_id)
+        if existing is not None:
+            ckpt_count = existing.get("count")
+            ckpt_start = existing.get("start")
+            if ckpt_count == count and ckpt_start == start:
+                done = sum(1 for t in existing.get("translations", []) if t)
+                logger.info(
+                    f"Batch {batch_id}: checkpoint exists "
+                    f"({done}/{count} segments) — skipping"
+                )
+                continue
+            logger.warning(
+                f"Batch {batch_id}: stale checkpoint ignored "
+                f"(expected {count} segs @ {start}, "
+                f"got {ckpt_count} segs @ {ckpt_start})"
             )
 
-            prompt = prompt_template.format(
-                source_text       = combined,
-                source_lang_label = LANG_LABELS.get(source_lang, source_lang),
-                target_lang       = LANG_LABELS.get(target_lang, target_lang),
-                hanzi_instruction = hanzi_instr,
-            )
+        logger.info(f"Batch {batch_id}: translating segments {start}–{start + count - 1} ({total} total)")
+
+        batch_segs = list(segments[start:start + count])
+        result_parts: list[str] = [""] * count
+        pending_indices: list[int] = list(range(count))
+        success = False
+
+        for attempt in range(4):
+            if not pending_indices:
+                success = True
+                break
+
+            if attempt > 0:
+                logger.info(
+                    f"Retry {attempt}/3 for batch {batch_id}: "
+                    f"{len(pending_indices)} segments remain"
+                )
+                time.sleep(5 * attempt)
+
+            current_slice = [batch_segs[i] for i in pending_indices]
 
             try:
-                response = translate(prompt, max_tokens=16384, store_name=store_name, job_type="lt_preprocess_nmt")
-                break
-            except ValueError as e:
-                if not str(e).startswith("TOKEN_LIMIT:"):
-                    raise
-                if len(batch_slice) > 1:
-                    batch_slice = batch_slice[:max(1, len(batch_slice) // 2)]
-                    logger.warning(f"Context window exceeded, halving batch to {len(batch_slice)}")
+                # ── Build prompt ──
+                parts = []
+                for j, seg in enumerate(current_slice):
+                    parts.append(f"=== SEGMENT {j+1} ===\n{seg['text']}")
+                combined = "\n\n".join(parts)
+
+                prompt = prompt_template.format(
+                    source_text       = combined,
+                    source_lang_label = LANG_LABELS.get(source_lang, source_lang),
+                    target_lang       = LANG_LABELS.get(target_lang, target_lang),
+                    hanzi_instruction = hanzi_instr,
+                    num_segments      = len(current_slice),
+                )
+
+                response = translate(
+                    prompt, max_tokens=16384, store_name=store_name,
+                    job_type="lt_preprocess_nmt",
+                )
+
+                # ── Parse delimiter-separated response ──
+                parsed = re.split(r'<<<TRAN(?:SLATION)?_END?>>>', response)
+                parsed = [p.strip() for p in parsed]
+                if parsed and not parsed[0]:
+                    parsed.pop(0)
+                if parsed and not parsed[-1]:
+                    parsed.pop(-1)
+
+                newly_done: list[int] = []
+                for j, p in enumerate(parsed):
+                    if j < len(pending_indices) and p:
+                        original_idx = pending_indices[j]
+                        result_parts[original_idx] = p
+                        newly_done.append(original_idx)
+
+                # ── tai-lo Hanzi check ──
+                if target_lang == "tai-lo":
+                    for seg_idx in list(newly_done):
+                        if not _has_sufficient_hanzi(result_parts[seg_idx]):
+                            logger.warning(
+                                f"Segment {start + seg_idx} has insufficient Han "
+                                f"characters (tai-lo target), retrying"
+                            )
+                            result_parts[seg_idx] = ""
+                            newly_done.remove(seg_idx)
+
+                pending_indices = [i for i in pending_indices if i not in newly_done]
+
+                non_empty = sum(1 for p in result_parts if p)
+                if pending_indices:
+                    if attempt < 3:
+                        logger.info(
+                            f"Batch {batch_id}: attempt {attempt+1}/4 — "
+                            f"{non_empty}/{count} segments, "
+                            f"{len(pending_indices)} pending"
+                        )
+                    else:
+                        logger.warning(
+                            f"Batch {batch_id}: final attempt — "
+                            f"{non_empty}/{count} segments, proceeding "
+                            f"with {len(pending_indices)} gaps"
+                        )
+                        success = True
+                else:
+                    success = True
+
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1}/4 for batch {batch_id} failed: {e}")
+                if attempt < 3:
                     continue
-                raise ValueError(f"Segment too large ({len(batch_slice[0]['text'])} chars) even with RAG") from e
+                logger.error(f"Batch {batch_id} permanently failed after 4 attempts")
 
-        actual_size = len(batch_slice)
-
-        # Parse numbered responses
-        numbered_parts = re.findall(r"\[(\d+)\]\s*(.*?)(?=\[\d+\]|$)", response, re.DOTALL)
-        if numbered_parts and len(numbered_parts) == actual_size:
-            parts = [p.strip() for _, p in numbered_parts]
-            for k in range(len(parts)):
-                if re.match(r'^\[?PARA_SEP\]?$', parts[k], re.IGNORECASE):
-                    parts[k] = ""
-                    logger.warning(f"Segment {start_idx+k} contains PARA_SEP marker instead of translation")
-        else:
-            first_marker = re.search(r"\n?\[1\]", response)
-            clean_response = response[first_marker.end():] if first_marker else response
-            parts = re.split(r"\[PARA_SEP\]|\[\d+\]", clean_response)
-            parts = [p.strip() for p in parts if p.strip()]
-
-        # Handle part count mismatch
-        if len(parts) > actual_size:
-            if len(parts[0]) < len(parts[1]) * 0.3 and not parts[0].rstrip().endswith("."):
-                parts[0] = parts[0] + " " + parts[1]
-                parts.pop(1)
-            while len(parts) > actual_size:
-                parts[-2] = parts[-2] + " " + parts.pop(-1)
-
-        elif len(parts) < actual_size:
-            first_marker = re.search(r"\n?\[1\]", response)
-            clean_response = response[first_marker.end():] if first_marker else response
-            fallback = [p.strip() for p in re.split(r"\n{2,}", clean_response) if p.strip()]
-            while fallback and PREAMBLE_RE.match(fallback[0]):
-                fallback.pop(0)
-            if len(fallback) > actual_size:
-                if len(fallback[0]) < len(fallback[1]) * 0.3 and not fallback[0].rstrip().endswith("."):
-                    fallback[0] = fallback[0] + " " + fallback[1]
-                    fallback.pop(1)
-                while len(fallback) > actual_size:
-                    fallback[-2] = fallback[-2] + " " + fallback.pop(-1)
-            if len(fallback) >= actual_size:
-                parts = fallback[:actual_size]
-
-        return start_idx, parts[:actual_size], actual_size
-
-    num_workers = min(3, len(batches))
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        fut_map = {executor.submit(_process_batch, si, b): si for si, b in batches}
-        for future in as_completed(fut_map):
-            start_idx, parts, actual_size = future.result()
-            for k, part in enumerate(parts):
-                results[start_idx + k] = part
-                if target_lang == "tai-lo" and not _has_sufficient_hanzi(part):
-                    seg_num = start_idx + k
-                    logger.warning(
-                        f"Segment {seg_num} in batch {(start_idx // batch_size) + 1} has insufficient "
-                        f"Han characters (tai-lo target) — prompt may need strengthening"
-                    )
-            for k in range(len(parts), actual_size):
-                results[start_idx + k] = ""
-                logger.warning(f"Missing translation for segment {start_idx + k}")
+        # ── Save checkpoint (or skip if permanently failed) ──
+        if success and result_parts is not None:
+            ckpt_data = {
+                "batch_id":     batch_id,
+                "start":        start,
+                "count":        len(result_parts),
+                "translations": result_parts,
+            }
+            save_batch_checkpoint(batch_id, ckpt_data)
+            done_after = sum(1 for t in result_parts if t)
             logger.info(
-                f"Translated batch: segments {start_idx}–{start_idx + actual_size - 1} "
-                f"({len(segments)} total)"
+                f"Batch {batch_id}: saved checkpoint — "
+                f"{done_after}/{len(result_parts)} segments, "
+                f"segments {start}–{start + count - 1}"
             )
-
-    return results
+        else:
+            logger.error(
+                f"Batch {batch_id} permanently failed — no checkpoint written. "
+                f"Segments {start}–{start + count - 1} will be blank."
+            )
 
 
 # ── 讀取支援材料 ───────────────────────────────────────────────────────────────
@@ -493,7 +592,6 @@ def run():
     update_order_field("status", "processing")
 
     try:
-        # ── 1. 取得訂單資訊 ──────────────────────────────────────────────────
         order = get_order_info()
         source_lang = order["source_lang"]
         target_lang = order["target_lang"]
@@ -502,44 +600,72 @@ def run():
         if not gcs_path:
             raise ValueError(f"No upload file found for order {cfg.ORDER_ID}")
 
-        logger.info(f"Reading upload: {gcs_path}")
+        # ── Phase 1: Preprocess (load or create) ───────────────────────────
+        artifacts = load_preprocess_artifacts()
+        if artifacts is not None:
+            segments, batches, metadata = artifacts
+            paragraphs = [s["text"] for s in segments]
+            logger.info(
+                f"Loaded preprocess artifacts: {len(segments)} segments, "
+                f"{len(batches)} batches"
+            )
+        else:
+            logger.info(f"Reading upload: {gcs_path}")
 
-        # ── 2. 讀取並正規化原文 ──────────────────────────────────────────────
-        raw_bytes = read_upload(gcs_path)
-        text      = normalize_text(raw_bytes)
-        logger.info(f"Source text length: {len(text)} chars")
+            raw_bytes  = read_upload(gcs_path)
+            text       = normalize_text(raw_bytes)
+            logger.info(f"Source text length: {len(text)} chars")
 
-        # ── 3. 段落分割（LT 使用較大的 segment）──────────────────────────────
-        paragraphs = split_paragraphs(text)
-        logger.info(f"Split into {len(paragraphs)} segments (LT large-segment mode)")
+            paragraphs = split_paragraphs(text)
+            logger.info(f"Split into {len(paragraphs)} segments (LT large-segment mode)")
 
-        # ── 4. 載入支援材料（File Search Store）─────────────────────────────
+            segments = [
+                {"index": i, "text": p, "char_count": len(p)}
+                for i, p in enumerate(paragraphs)
+            ]
+            batches = build_batches(segments)
+
+            metadata = {
+                "order_id":       cfg.ORDER_ID,
+                "source_lang":    source_lang,
+                "target_lang":    target_lang,
+                "total_chars":    len(text),
+                "para_count":     len(paragraphs),
+                "gcs_upload":     gcs_path,
+                "track_type":     "literary",
+            }
+
+            save_preprocess_artifacts(segments, batches, metadata)
+            metadata["has_support"] = False  # placeholder, updated after Phase 1
+
+        # ── Phase 2: Support materials ─────────────────────────────────────
         store_name = load_support_context(cfg.ORDER_ID)
         if store_name:
             logger.info(f"File Search Store created: {store_name}")
         else:
             logger.info("No support materials found")
+        metadata["has_support"] = bool(store_name)
 
-        # ── 5. NMT 翻譯（文學風格 prompt + File Search RAG）─────────────────
-        translations = translate_batch(
-            segments        = [{"index": i, "text": p} for i, p in enumerate(paragraphs)],
+        # ── Phase 3: Sequential per-batch NMT ──────────────────────────────
+        seg_dicts = [{"index": i, "text": p} for i, p in enumerate(paragraphs)]
+
+        translate_batch(
+            segments        = seg_dicts,
             prompt_template = LT_PROMPT,
             source_lang     = source_lang,
             target_lang     = target_lang,
-            batch_size      = 3,  # smaller batches for literary quality
+            batches         = batches,
             store_name      = store_name,
         )
 
-        # ── 6. 清理 File Search Store ───────────────────────────────────────
+        # ── Phase 4: Aggregate per-batch checkpoints ──────────────────────
+        translations = aggregate_checkpoints(batches, len(paragraphs))
+
+        # ── Phase 5: Cleanup File Search Store ────────────────────────────
         if store_name:
             delete_file_search_store(store_name)
 
-        # ── 7. 寫入中間產物 ──────────────────────────────────────────────────
-        segments_out = [
-            {"index": i, "text": para, "char_count": len(para)}
-            for i, para in enumerate(paragraphs)
-        ]
-
+        # ── Phase 6: Write output artifacts ───────────────────────────────
         translations_out = [
             {
                 "index":      i,
@@ -550,24 +676,15 @@ def run():
             for i, (src, tgt) in enumerate(zip(paragraphs, translations))
         ]
 
-        metadata = {
-            "order_id":       cfg.ORDER_ID,
-            "source_lang":    source_lang,
-            "target_lang":    target_lang,
-            "total_chars":    len(text),
-            "para_count":     len(paragraphs),
-            "gcs_upload":     gcs_path,
-            "track_type":     "literary",
-            "has_support":    bool(store_name),
-        }
-
-        write_temp_json("segments.json",       segments_out)
-        write_temp_json("translations.json",    translations_out)
-        write_temp_json("translations_raw.json", translations_out)
-        write_temp_json("metadata.json",        metadata)
+        write_temp_json("translations.json",      translations_out)
+        write_temp_json("translations_raw.json",   translations_out)
+        write_temp_json("metadata.json",           metadata)
 
         update_job_status("lt_preprocess_nmt", "success")
-        logger.info(f"=== lt_preprocess_nmt DONE — {len(paragraphs)} segments, {len(text)} chars ===")
+        logger.info(
+            f"=== lt_preprocess_nmt DONE — {len(paragraphs)} segments, "
+            f"{metadata['total_chars']} chars ==="
+        )
 
     except Exception as e:
         logger.exception(f"lt_preprocess_nmt FAILED: {e}")

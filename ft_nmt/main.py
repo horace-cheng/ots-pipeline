@@ -127,7 +127,7 @@ def translate_single(
     for attempt in range(max_retries + 1):
         response = translate(prompt, job_type="nmt")
 
-        parts = re.split(r"\[PARA_SEP\]|\[\d+\]", response)
+        parts = re.split(r"\[\d+\]", response)
         parts = [p.strip() for p in parts if p.strip()]
         result = parts[0] if parts else response.strip()
 

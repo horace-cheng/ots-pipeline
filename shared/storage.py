@@ -5,7 +5,7 @@ GCS 讀寫工具，供所有 Pipeline Jobs 使用。
 Pipeline 資料存放於 BUCKET_TEMP，按 order_id 隔離。
 """
 
-import json
+import json, re
 from google.cloud import storage
 from shared.config import cfg
 import logging
@@ -75,6 +75,141 @@ def write_output(filename: str, content: str, content_type: str = "text/plain") 
     return full_path
 
 
+# ── 預處理產物（segments / batches / metadata）───────────────────────────────
+# 寫入一次，後續重啟可跳過預處理，直接從 NMT 階段開始。
+
+PREPROCESS_SEGMENTS  = "segments.json"
+PREPROCESS_BATCHES   = "batches.json"
+PREPROCESS_METADATA  = "metadata.json"
+
+
+def save_preprocess_artifacts(
+    segments: list[dict],
+    batches: list[dict],
+    metadata: dict,
+):
+    """Write preprocess artifacts to GCS temp.
+
+    Once written, subsequent runs can load these to skip re-preprocessing.
+    """
+    write_temp_json(PREPROCESS_SEGMENTS, segments)
+    write_temp_json(PREPROCESS_BATCHES,  batches)
+    write_temp_json(PREPROCESS_METADATA, metadata)
+    logger.info(
+        f"Preprocess artifacts saved: {len(segments)} segments, "
+        f"{len(batches)} batches"
+    )
+
+
+def load_preprocess_artifacts() -> tuple[list[dict], list[dict], dict] | None:
+    """Load preprocess artifacts from GCS temp.
+
+    Returns (segments, batches, metadata) or None if any file is missing.
+    """
+    try:
+        segments = read_temp_json(PREPROCESS_SEGMENTS)
+        batches  = read_temp_json(PREPROCESS_BATCHES)
+        metadata = read_temp_json(PREPROCESS_METADATA)
+        if isinstance(segments, list) and isinstance(batches, list) and isinstance(metadata, dict):
+            logger.info(
+                f"Preprocess artifacts loaded: {len(segments)} segments, "
+                f"{len(batches)} batches"
+            )
+            return segments, batches, metadata
+    except Exception:
+        pass
+    return None
+
+
+# ── 每批 NMT Checkpoint（單一檔案／無 Lock）───────────────────────────────────
+# 每個 batch 寫入一獨立檔案，無需 lock、可無損恢復。
+
+CHECKPOINT_BATCH_PREFIX = "checkpoint_batch_"
+
+
+def _checkpoint_filename(batch_id: int) -> str:
+    return f"{CHECKPOINT_BATCH_PREFIX}{batch_id}.json"
+
+
+def save_batch_checkpoint(batch_id: int, data: dict):
+    """Save one batch's translation result as a per-batch checkpoint file."""
+    write_temp_json(_checkpoint_filename(batch_id), data)
+
+
+def load_batch_checkpoint(batch_id: int) -> dict | None:
+    """Load a per-batch checkpoint file, or None if missing/corrupted."""
+    try:
+        return read_temp_json(_checkpoint_filename(batch_id))
+    except Exception:
+        return None
+
+
+def list_batch_checkpoints() -> list[int]:
+    """Return sorted list of batch_ids that have checkpoint files on GCS."""
+    client = get_client()
+    bucket = client.bucket(cfg.BUCKET_TEMP)
+    prefix = _temp_path(CHECKPOINT_BATCH_PREFIX)
+    blobs  = list(bucket.list_blobs(prefix=prefix))
+    ids: list[int] = []
+    for b in blobs:
+        m = re.search(rf"{CHECKPOINT_BATCH_PREFIX}(\d+)\.json$", b.name)
+        if m:
+            ids.append(int(m.group(1)))
+    return sorted(ids)
+
+
+def aggregate_checkpoints(
+    batches: list[dict],
+    total_segments: int,
+) -> list[str]:
+    """Aggregate all per-batch checkpoint files into an ordered translation list.
+
+    Reads every checkpoint_batch_{id}.json, validates that all batch files
+    exist and no segment is empty, then returns a flat list[str] ordered by
+    segment index.
+
+    Raises RuntimeError if any segment is empty (zero-empty-segment policy).
+    """
+    translations = [""] * total_segments
+
+    for batch in batches:
+        batch_id = batch["batch_id"]
+        start    = batch["start"]
+        count    = batch["count"]
+
+        ckpt = load_batch_checkpoint(batch_id)
+        if ckpt is None:
+            raise RuntimeError(
+                f"Missing checkpoint for batch {batch_id} — "
+                f"cannot aggregate incomplete results"
+            )
+
+        parts = ckpt.get("translations", [])
+        if len(parts) != count:
+            raise RuntimeError(
+                f"Checkpoint batch {batch_id}: expected {count} translations, "
+                f"got {len(parts)}"
+            )
+
+        for offset, t in enumerate(parts):
+            idx = start + offset
+            if not t:
+                raise RuntimeError(
+                    f"Empty translation in batch {batch_id}, segment {idx} "
+                    f"— zero-empty-segment policy enforced"
+                )
+            translations[idx] = t
+
+    done = sum(1 for t in translations if t)
+    logger.info(
+        f"Aggregated {done}/{total_segments} translations from "
+        f"{len(batches)} batch checkpoint(s)"
+    )
+
+    return translations
+
+
+# ── 支援材料 ──────────────────────────────────────────────────────────────────
 def list_support_files() -> list[dict]:
     """列出支援材料檔案（GCS uploads bucket 中的 orders/{order_id}/support/ 目錄）"""
     client = get_client()
