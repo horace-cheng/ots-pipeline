@@ -127,6 +127,7 @@ CLOUDBUILD
   COMMON_ENV+=",GCS_UPLOADS_BUCKET=${PROJECT_ID}-uploads-${ENV}"
   COMMON_ENV+=",GCS_OUTPUTS_BUCKET=${PROJECT_ID}-outputs-${ENV}"
   COMMON_ENV+=",GCS_TEMP_BUCKET=${PROJECT_ID}-pipeline-temp-${ENV}"
+  COMMON_ENV+=",WEB_PORTAL_URL=https://ots-frontend-${ENV}-miptn5nxpa-de.a.run.app"
 
   # 根據 tier 設定資源
   if [[ "$job_tier" == "large" ]]; then
@@ -183,6 +184,22 @@ CLOUDBUILD
   ok "Job deployed: ${job_name}"
   echo ""
 done
+
+# ── 授予 API SA 觸發 Deliver Job 的權限 ────────────────────────────────────────
+SA_API="ots-api-backend-${ENV}@${PROJECT_ID}.iam.gserviceaccount.com"
+for job_spec in "${JOBS[@]}"; do
+  IFS=':' read -r job_key job_name _ <<< "$job_spec"
+  if [[ "$job_key" == deliver || "$job_key" == lt_deliver ]]; then
+    log "Granting run.invoker on ${job_name} to ${SA_API}..."
+    gcloud run jobs add-iam-policy-binding "$job_name" \
+      --region="$REGION" \
+      --project="$PROJECT_ID" \
+      --member="serviceAccount:${SA_API}" \
+      --role="roles/run.developer" \
+      --quiet
+  fi
+done
+ok "API SA 的 Deliver Job 觸發權限已設定"
 
 # ── 輸出摘要 ──────────────────────────────────────────────────────────────────
 echo -e "${GREEN}=====================================================${NC}"

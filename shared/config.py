@@ -21,6 +21,9 @@ class PipelineConfig:
     BUCKET_OUTPUTS:  str = os.environ.get("GCS_OUTPUTS_BUCKET",  "ots-translation-outputs-dev")
     BUCKET_TEMP:     str = os.environ.get("GCS_TEMP_BUCKET",     "ots-translation-pipeline-temp-dev")
 
+    # Frontend URL (for serving static assets like fonts in deliverable HTML)
+    WEB_PORTAL_URL:  str = os.environ.get("WEB_PORTAL_URL", "https://ots-frontend-dev-miptn5nxpa-de.a.run.app")
+
     # Vertex AI / Gemini
     GEMINI_PRO_MODEL:   str = "gemini-2.5-flash"
     GEMINI_FLASH_MODEL: str = "gemini-2.5-flash"

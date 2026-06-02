@@ -203,6 +203,9 @@ def translate_batch(segments: list[dict], prompt_template: str,
             parts = re.split(r"\[PARA_SEP\]|\[\d+\]", clean_response)
             parts = [p.strip() for p in parts if p.strip()]
 
+        # Strip any [PARA_SEP] tokens that leaked into translations
+        parts = [p.replace("[PARA_SEP]", "").strip() for p in parts]
+
         # ── Handle part count mismatch ──
         if len(parts) > len(batch):
             # LLM produced extra paragraphs (e.g. split title from body)

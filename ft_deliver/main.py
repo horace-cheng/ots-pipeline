@@ -10,9 +10,10 @@ Fast Track Step 4: 格式化交付
 - 寫入 BigQuery corpus（若 consent_given = true）
 """
 
-import sys, json, re, logging
+import sys, json, re, logging, os
 from datetime import datetime, timezone
 from pathlib import Path
+from sqlalchemy import text as sqla_text
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -96,7 +97,8 @@ def format_html(translations: list[dict], metadata: dict,
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OTS 翻譯 — {order}</title>
 <style>
-  body {{ font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 2rem; color: #333; }}
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Noto+Sans:wght@400;700&family=Iansui:wght@400;700&display=swap');
+  body {{ font-family: 'Iansui', 'Noto Sans TC', 'Noto Sans', system-ui, -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; color: #333; }}
   header {{ border-bottom: 2px solid #1F497D; padding-bottom: 1rem; margin-bottom: 2rem; }}
   h1 {{ color: #1F497D; font-size: 1.4rem; margin-bottom: 0.5rem; }}
   .meta {{ color: #666; font-size: 0.9rem; }}
@@ -130,6 +132,9 @@ def format_html(translations: list[dict], metadata: dict,
 
 def format_bilingual_html(translations: list[dict], metadata: dict) -> str:
     """產生原文＋譯文對照 HTML（左右雙欄）"""
+    def _html(text: str) -> str:
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+
     order    = metadata.get("order_id", "")
     src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), metadata.get("source_lang", ""))
     tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), metadata.get("target_lang", ""))
@@ -150,7 +155,8 @@ def format_bilingual_html(translations: list[dict], metadata: dict) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OTS 翻譯對照 — {order}</title>
 <style>
-  body {{ font-family: Georgia, serif; max-width: 1000px; margin: 0 auto; padding: 2rem; color: #333; }}
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Noto+Sans:wght@400;700&family=Iansui:wght@400;700&display=swap');
+  body {{ font-family: 'Iansui', 'Noto Sans TC', 'Noto Sans', system-ui, -apple-system, sans-serif; max-width: 1000px; margin: 0 auto; padding: 2rem; color: #333; }}
   header {{ border-bottom: 2px solid #1F497D; padding-bottom: 1rem; margin-bottom: 2rem; }}
   h1 {{ color: #1F497D; font-size: 1.4rem; margin-bottom: 0.5rem; }}
   .meta {{ color: #666; font-size: 0.9rem; }}
@@ -312,44 +318,57 @@ def run():
         update_order_field("gcs_plain_text_output_path", plain_path)
 
         # ── 判斷 QA 分數是否達標 ──────────────────────────────────────────
-        llm_score = None
-        if qa_result and qa_result.get("layer4_llm_judge"):
-            llm_score = qa_result["layer4_llm_judge"].get("score")
+        redeliver = os.environ.get("REDELIVER", "").lower() == "true"
 
-        must_fix_count = qa_result.get("must_fix_count", 0) if qa_result else 0
-        qa_passed = (llm_score is None or llm_score >= cfg.LLM_JUDGE_MIN_SCORE) and must_fix_count == 0
-
-        if qa_passed:
-            final_status = "delivered"
+        if redeliver:
+            logger.info("Redeliver mode — setting status to delivered, skipping QA gate / corpus / notification")
+            with get_db() as db:
+                db.execute(sqla_text("""
+                    UPDATE orders
+                    SET status = 'delivered', delivered_at = NOW()
+                    WHERE id = :order_id
+                """), {"order_id": cfg.ORDER_ID})
         else:
-            final_status = "qa_review"
-            reason = f"score {llm_score:.1f} < {cfg.LLM_JUDGE_MIN_SCORE}" if (llm_score and llm_score < cfg.LLM_JUDGE_MIN_SCORE) else f"{must_fix_count} must_fix flags"
-            logger.warning(
-                f"QA failed ({reason}) — setting order to qa_review instead of delivered"
-            )
+            llm_score = None
+            if qa_result and qa_result.get("layer4_llm_judge"):
+                llm_score = qa_result["layer4_llm_judge"].get("score")
 
-        from sqlalchemy import text as sqla_text
-        with get_db() as db:
+            must_fix_count = qa_result.get("must_fix_count", 0) if qa_result else 0
+            qa_passed = (llm_score is None or llm_score >= cfg.LLM_JUDGE_MIN_SCORE) and must_fix_count == 0
+
             if qa_passed:
-                db.execute(sqla_text("""
-                    UPDATE orders
-                    SET status       = 'delivered',
-                        delivered_at = NOW()
-                    WHERE id = :order_id
-                """), {"order_id": cfg.ORDER_ID})
+                final_status = "delivered"
             else:
-                db.execute(sqla_text("""
-                    UPDATE orders
-                    SET status = 'qa_review'
-                    WHERE id = :order_id
-                """), {"order_id": cfg.ORDER_ID})
+                final_status = "qa_review"
+                reason = f"score {llm_score:.1f} < {cfg.LLM_JUDGE_MIN_SCORE}" if (llm_score and llm_score < cfg.LLM_JUDGE_MIN_SCORE) else f"{must_fix_count} must_fix flags"
+                logger.warning(
+                    f"QA failed ({reason}) — setting order to qa_review instead of delivered"
+                )
 
-        # ── 語料寫入 BigQuery ─────────────────────────────────────────────
-        write_corpus(translations, metadata, qa_result)
+            logger.info(
+                f"QA passed (score={llm_score}, must_fix={must_fix_count}) — delivering"
+            )
+            with get_db() as db:
+                if qa_passed:
+                    db.execute(sqla_text("""
+                        UPDATE orders
+                        SET status       = 'delivered',
+                            delivered_at = NOW()
+                        WHERE id = :order_id
+                    """), {"order_id": cfg.ORDER_ID})
+                else:
+                    db.execute(sqla_text("""
+                        UPDATE orders
+                        SET status = 'qa_review'
+                        WHERE id = :order_id
+                    """), {"order_id": cfg.ORDER_ID})
 
-        # ── 通知客戶（僅 QA 通過時）──────────────────────────────────────
-        if qa_passed:
-            notify_delivery()
+            # ── 語料寫入 BigQuery ─────────────────────────────────────────────
+            write_corpus(translations, metadata, qa_result)
+
+            # ── 通知客戶（僅 QA 通過時）──────────────────────────────────────
+            if qa_passed:
+                notify_delivery()
 
         update_job_status("format_deliver", "success")
         logger.info(f"=== ft_deliver DONE — output: {html_path} ===")

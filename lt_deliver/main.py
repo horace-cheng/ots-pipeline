@@ -332,7 +332,8 @@ def format_html(translations: list[dict], metadata: dict,
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{_l10n(tgt_code, 'title')} — {order}</title>
 <style>
-  body {{ font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 2rem; color: #333; }}
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Noto+Sans:wght@400;700&family=Iansui:wght@400;700&display=swap');
+  body {{ font-family: 'Iansui', 'Noto Sans TC', 'Noto Sans', system-ui, -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; color: #333; }}
   header {{ border-bottom: 2px solid #8B5CF6; padding-bottom: 1rem; margin-bottom: 2rem; }}
   h1 {{ color: #8B5CF6; font-size: 1.4rem; margin-bottom: 0.5rem; }}
   .meta {{ color: #666; font-size: 0.9rem; }}
@@ -421,7 +422,8 @@ def format_bilingual_html(translations: list[dict], metadata: dict,
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{_l10n(tgt_code, 'title')}（對照版） — {order}</title>
 <style>
-  body {{ font-family: Georgia, serif; max-width: 1000px; margin: 0 auto; padding: 2rem; color: #333; }}
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Noto+Sans:wght@400;700&family=Iansui:wght@400;700&display=swap');
+  body {{ font-family: 'Iansui', 'Noto Sans TC', 'Noto Sans', system-ui, -apple-system, sans-serif; max-width: 1000px; margin: 0 auto; padding: 2rem; color: #333; }}
   header {{ border-bottom: 2px solid #8B5CF6; padding-bottom: 1rem; margin-bottom: 2rem; }}
   h1 {{ color: #8B5CF6; font-size: 1.4rem; margin-bottom: 0.5rem; }}
   .meta {{ color: #666; font-size: 0.9rem; }}
