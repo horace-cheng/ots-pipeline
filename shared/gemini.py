@@ -221,32 +221,45 @@ def call_gemini_with_file_search(
     model: str | None = None,
     max_tokens: int = 8192,
     response_mime_type: str | None = None,
+    extra_files: list | None = None,
 ) -> tuple[str, dict]:
     """
     使用 File Search（RAG）呼叫 Gemini。
     自動從 File Search Store 檢索相關上下文。
+    extra_files: 額外上傳至 Gemini File API 的 File 物件（例如 translation memory），
+                 會以 FileData Part 形式附在 contents 前端。
     """
     client = _get_new_genai_client()
     from google.genai import types
 
     model_name = model or cfg.GEMINI_PRO_MODEL
 
-    # ── count_tokens pre-flight ──
-    token_count = client.models.count_tokens(
-        model=model_name,
-        contents=prompt,
-    )
-    if token_count.total_tokens > 950_000:
-        raise ValueError(
-            f"TOKEN_LIMIT: input {token_count.total_tokens} tokens exceeds safe limit "
-            f"(model max ~1,048,576, leaving room for output)"
-        )
+    # ── Build contents: extra_files first, then prompt ──
+    contents: list = []
+    if extra_files:
+        for f in extra_files:
+            file_part = types.Part(
+                file_data=types.FileData(
+                    file_uri=f.uri,
+                    mime_type=f.mime_type,
+                )
+            )
+            contents.append(file_part)
+    contents.append(prompt)
 
-    if token_count.total_tokens > 950_000:
-        raise ValueError(
-            f"TOKEN_LIMIT: input {token_count.total_tokens} tokens exceeds safe limit "
-            f"(model max ~1,048,576, leaving room for output)"
+    # ── count_tokens pre-flight ──
+    try:
+        token_count = client.models.count_tokens(
+            model=model_name,
+            contents=contents,
         )
+        if token_count.total_tokens > 950_000:
+            raise ValueError(
+                f"TOKEN_LIMIT: input {token_count.total_tokens} tokens exceeds safe limit "
+                f"(model max ~1,048,576, leaving room for output)"
+            )
+    except Exception as e:
+        logger.warning(f"count_tokens with TM file failed (non-fatal): {e}")
 
     config = types.GenerateContentConfig(
         max_output_tokens=max_tokens,
@@ -264,7 +277,7 @@ def call_gemini_with_file_search(
         try:
             response = client.models.generate_content(
                 model=model_name,
-                contents=prompt,
+                contents=contents,
                 config=config,
             )
             usage = getattr(response, 'usage_metadata', None)
@@ -316,6 +329,7 @@ def translate(
     store_name: str | None = None,
     job_type: str | None = None,
     response_mime_type: str | None = None,
+    extra_files: list | None = None,
 ) -> str:
     """
     翻譯入口。
@@ -323,6 +337,8 @@ def translate(
     TRANSLATION_BACKEND=claude         → Claude（備援）
 
     若傳入 store_name，則使用 File Search（RAG）而非 raw File API 附件。
+    extra_files 為額外透過 Gemini File API 上傳的 File 物件（如 translation memory），
+    會與 File Search RAG 並存。
     若提供 job_type，則自動記錄 token 用量至 DB。
     response_mime_type: "application/json" 啟用 JSON 模式。
     """
@@ -336,7 +352,11 @@ def translate(
         return text
 
     if store_name:
-        text, usage = call_gemini_with_file_search(prompt, store_name, model, max_tokens, response_mime_type=response_mime_type)
+        text, usage = call_gemini_with_file_search(
+            prompt, store_name, model, max_tokens,
+            response_mime_type=response_mime_type,
+            extra_files=extra_files,
+        )
     else:
         text, usage = call_gemini(prompt, model, max_tokens, files, response_mime_type=response_mime_type)
 

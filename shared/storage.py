@@ -161,16 +161,16 @@ def list_batch_checkpoints() -> list[int]:
 def aggregate_checkpoints(
     batches: list[dict],
     total_segments: int,
-) -> list[str]:
+) -> tuple[list[str], list[int]]:
     """Aggregate all per-batch checkpoint files into an ordered translation list.
 
-    Reads every checkpoint_batch_{id}.json, validates that all batch files
-    exist and no segment is empty, then returns a flat list[str] ordered by
-    segment index.
-
-    Raises RuntimeError if any segment is empty (zero-empty-segment policy).
+    Reads every checkpoint_batch_{id}.json and validates that all batch files
+    exist.  Empty translations are logged as warnings and their indices are
+    returned in the second element of the tuple for downstream QA flagging
+    (instead of raising).
     """
     translations = [""] * total_segments
+    empty_indices: list[int] = []
 
     for batch in batches:
         batch_id = batch["batch_id"]
@@ -194,10 +194,11 @@ def aggregate_checkpoints(
         for offset, t in enumerate(parts):
             idx = start + offset
             if not t:
-                raise RuntimeError(
+                logger.warning(
                     f"Empty translation in batch {batch_id}, segment {idx} "
-                    f"— zero-empty-segment policy enforced"
+                    f"— marking as must_fix"
                 )
+                empty_indices.append(idx)
             translations[idx] = t
 
     done = sum(1 for t in translations if t)
@@ -206,7 +207,7 @@ def aggregate_checkpoints(
         f"{len(batches)} batch checkpoint(s)"
     )
 
-    return translations
+    return translations, empty_indices
 
 
 # ── 支援材料 ──────────────────────────────────────────────────────────────────

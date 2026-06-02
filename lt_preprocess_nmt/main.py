@@ -11,21 +11,24 @@ Literary Track Step 1: Preprocess + NMT (AI Draft)
 - 更新訂單狀態 → processing（等待 admin 指派編輯）
 """
 
-import sys, re, unicodedata, logging, zipfile, io, time
+import sys, re, unicodedata, logging, zipfile, io, time, json, random
 from pathlib import Path
 from xml.etree import ElementTree
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config  import cfg
-from shared.db      import update_job_status, get_order_info, update_order_field, get_lang_labels
+from shared.db      import update_job_status, get_order_info, update_order_field, get_lang_labels, write_qa_flags
 from shared.storage import (
     read_upload, write_temp_json,
     save_preprocess_artifacts, load_preprocess_artifacts,
     save_batch_checkpoint, load_batch_checkpoint,
     aggregate_checkpoints,
 )
-from shared.gemini  import translate, create_file_search_store, upload_to_file_search_store, delete_file_search_store
+from shared.gemini  import (
+    translate, create_file_search_store, upload_to_file_search_store,
+    delete_file_search_store, upload_file_to_gemini, delete_gemini_file,
+)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -212,6 +215,8 @@ Rules:
 7. IMPORTANT: The delimiter <<<TRANSLATION_END>>> must appear on its own line with NO surrounding text. Do NOT embed it inside a translation. Do NOT add extra delimiters or misspell them.
 8. Reference materials (glossaries, style guides, background documents) are attached for translation context — use them to inform terminology and style
 9. Do NOT translate or modify footnote/annotation/remark numbers (e.g., [1], ①, (a), Note 1) — keep them exactly as in the source
+10. A file containing previously translated segments from this document is attached. Reference it to keep terminology, style, and tone consistent across the entire translation.
+11. If a segment consists entirely of non-letter characters (e.g., asterisks, dashes, symbols, ornamental marks, spaces) with no alphabetic or CJK text content, output it exactly as-is without any modification or translation.
 {hanzi_instruction}
 Source text:
 {source_text}
@@ -226,7 +231,7 @@ def _get_hanzi_instruction(target_lang: str) -> str:
     if target_lang != "tai-lo":
         return ""
     return (
-        "10. CRITICAL — Taiwanese Hokkien output MUST be written in Han characters (台語漢字), "
+        "12. CRITICAL — Taiwanese Hokkien output MUST be written in Han characters (台語漢字), "
         "NOT in Pe̍h-ōe-jī romanization.\n"
         "   Correct examples: 我 (not góa), 的 (not ê), 是 (not sī), 有 (not ū), 人 (not lâng), "
         "愛 (not ài), 講 (not kóng), 看 (not khòaⁿ), 這 (not che), 佇 (not tī).\n"
@@ -299,7 +304,84 @@ def build_batches(
     return batches
 
 
-# ── 分批翻譯（順序執行 + 每批獨立 Checkpoint）─────────────────────────────
+# ── Translation Memory（跨批一致 terminolgy）─────────────────────────────
+TM_BLOB_PATH = f"temp/{cfg.ORDER_ID}/translation_memory.jsonl"
+
+
+def _append_translation_memory_batch(entries: list[tuple[str, str]]) -> None:
+    """Append multiple (source, translation) pairs to the GCS TM file in one operation.
+
+    Retries with exponential backoff on 429 rate-limit errors.
+    """
+    if not entries:
+        return
+
+    from shared.storage import get_client
+
+    new_lines = "\n".join(
+        json.dumps({"source": s, "translation": t}, ensure_ascii=False)
+        for s, t in entries
+    ) + "\n"
+
+    for attempt in range(4):
+        try:
+            client = get_client()
+            bucket = client.bucket(cfg.BUCKET_TEMP)
+            blob = bucket.blob(TM_BLOB_PATH)
+
+            if blob.exists():
+                existing = blob.download_as_text()
+                existing += new_lines
+                blob.upload_from_string(existing)
+            else:
+                blob.upload_from_string(new_lines)
+            return
+        except Exception as e:
+            if "429" in str(e) or "rateLimitExceeded" in str(e):
+                wait = 2 ** attempt * 2 + random.uniform(0, 2)
+                logger.warning(f"TM append rate-limited, retrying in {wait:.0f}s (attempt {attempt+1}/4)")
+                time.sleep(wait)
+            else:
+                logger.warning(f"TM append failed (non-fatal): {e}")
+                return
+
+
+def _read_translation_memory() -> list[dict]:
+    """Read all accumulated TM entries from GCS."""
+    from shared.storage import get_client
+    client = get_client()
+    bucket = client.bucket(cfg.BUCKET_TEMP)
+    blob = bucket.blob(TM_BLOB_PATH)
+    if not blob.exists():
+        return []
+    text = blob.download_as_text()
+    entries = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            logger.warning(f"Skipping corrupt TM line: {line[:80]}")
+    return entries
+
+
+def _build_tm_text(entries: list[dict]) -> bytes:
+    """Build a formatted text file from TM entries for Gemini upload."""
+    lines = [
+        "Previously translated segments from this document (source → translation):",
+        "",
+    ]
+    for i, e in enumerate(entries):
+        lines.append(f"--- Segment {i} ---")
+        lines.append(f"Source:      {e['source']}")
+        lines.append(f"Translation: {e['translation']}")
+        lines.append("")
+    return "\n".join(lines).encode("utf-8")
+
+
+# ── 分批翻譯（順序執行 + 每批獨立 Checkpoint + 跨批 Translation Memory）───
 def translate_batch(
     segments: list[dict],
     prompt_template: str,
@@ -315,7 +397,7 @@ def translate_batch(
     the batch is skipped (resume).  Stale checkpoints are ignored.
 
     Each failed batch is retried up to 4 times.  If all attempts fail no
-    checkpoint is written — ``aggregate_checkpoints`` will raise.
+    checkpoint is written — empty segments are later flagged as ``must_fix``.
     """
     total = len(segments)
     hanzi_instr = _get_hanzi_instruction(target_lang)
@@ -331,35 +413,72 @@ def translate_batch(
         start   = batch["start"]
         count   = batch["count"]
 
-        # ── Skip if valid checkpoint already exists ──
-        existing = load_batch_checkpoint(batch_id)
-        if existing is not None:
-            ckpt_count = existing.get("count")
-            ckpt_start = existing.get("start")
-            if ckpt_count == count and ckpt_start == start:
-                done = sum(1 for t in existing.get("translations", []) if t)
-                logger.info(
-                    f"Batch {batch_id}: checkpoint exists "
-                    f"({done}/{count} segments) — skipping"
-                )
-                continue
-            logger.warning(
-                f"Batch {batch_id}: stale checkpoint ignored "
-                f"(expected {count} segs @ {start}, "
-                f"got {ckpt_count} segs @ {ckpt_start})"
-            )
-
-        logger.info(f"Batch {batch_id}: translating segments {start}–{start + count - 1} ({total} total)")
-
         batch_segs = list(segments[start:start + count])
         result_parts: list[str] = [""] * count
         pending_indices: list[int] = list(range(count))
         success = False
 
-        for attempt in range(4):
-            if not pending_indices:
-                success = True
-                break
+        # ── Check for existing checkpoint ──
+        existing = load_batch_checkpoint(batch_id)
+        if existing is not None:
+            ckpt_count = existing.get("count")
+            ckpt_start = existing.get("start")
+            if ckpt_count == count and ckpt_start == start:
+                ckpt_translations = existing.get("translations", [])
+                empty_count = sum(1 for t in ckpt_translations if not t)
+                if empty_count == 0:
+                    done = len(ckpt_translations)
+                    logger.info(
+                        f"Batch {batch_id}: checkpoint exists "
+                        f"({done}/{count} segments) — skipping"
+                    )
+                    continue
+                logger.info(
+                    f"Batch {batch_id}: checkpoint exists but "
+                    f"{empty_count}/{count} segments empty — recovering"
+                )
+                result_parts = list(ckpt_translations)
+                pending_indices = [i for i, t in enumerate(ckpt_translations) if not t]
+            else:
+                logger.warning(
+                    f"Batch {batch_id}: stale checkpoint ignored "
+                    f"(expected {count} segs @ {start}, "
+                    f"got {ckpt_count} segs @ {ckpt_start})"
+                )
+
+        # ── Auto-copy non-text segments (dividers, ornaments, etc.) ──
+        _has_text = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaffa-zA-Z]')
+        for i in list(pending_indices):
+            if not _has_text.search(batch_segs[i]['text']):
+                result_parts[i] = batch_segs[i]['text']
+                pending_indices.remove(i)
+
+        tm_file_obj = None
+
+        if not pending_indices:
+            logger.info(f"Batch {batch_id}: all segments auto-copied (non-text) — skipping translation")
+            success = True
+        else:
+            logger.info(f"Batch {batch_id}: translating segments {start}–{start + count - 1} ({total} total)")
+
+            # ── Upload translation memory for this batch ──
+            tm_entries = _read_translation_memory()
+            if tm_entries:
+                try:
+                    tm_data = _build_tm_text(tm_entries)
+                    logger.info(
+                        f"Batch {batch_id}: uploading translation memory "
+                        f"({len(tm_entries)} entries) to Gemini File API"
+                    )
+                    tm_file_obj = upload_file_to_gemini(tm_data, "translation_memory.txt", "text/plain")
+                except Exception as e:
+                    logger.warning(f"Batch {batch_id}: TM upload failed (non-fatal): {e}")
+                    tm_file_obj = None
+
+            for attempt in range(4):
+                if not pending_indices:
+                    success = True
+                    break
 
             if attempt > 0:
                 logger.info(
@@ -388,6 +507,7 @@ def translate_batch(
                 response = translate(
                     prompt, max_tokens=16384, store_name=store_name,
                     job_type="lt_preprocess_nmt",
+                    extra_files=[tm_file_obj] if tm_file_obj else None,
                 )
 
                 # ── Parse delimiter-separated response ──
@@ -466,11 +586,26 @@ def translate_batch(
                 f"{done_after}/{len(result_parts)} segments, "
                 f"segments {start}–{start + count - 1}"
             )
+
+            # ── Append successful translations to TM (single GCS op) ──
+            tm_new = []
+            for i, seg in enumerate(batch_segs):
+                translation = result_parts[i]
+                if translation:
+                    tm_new.append((seg['text'], translation))
+            if tm_new:
+                _append_translation_memory_batch(tm_new)
+
         else:
             logger.error(
                 f"Batch {batch_id} permanently failed — no checkpoint written. "
                 f"Segments {start}–{start + count - 1} will be blank."
             )
+
+        # ── Clean up Gemini TM file (always) ──
+        if tm_file_obj:
+            delete_gemini_file(tm_file_obj)
+            tm_file_obj = None
 
 
 # ── 讀取支援材料 ───────────────────────────────────────────────────────────────
@@ -660,6 +795,24 @@ def run():
         # ── Phase 3: Sequential per-batch NMT ──────────────────────────────
         seg_dicts = [{"index": i, "text": p} for i, p in enumerate(paragraphs)]
 
+        # Build translation memory from existing checkpoints (single GCS write)
+        tm_entries: list[tuple[str, str]] = []
+        for batch in batches:
+            ckpt = load_batch_checkpoint(batch["batch_id"])
+            if ckpt is not None:
+                if ckpt.get("count") == batch["count"] and ckpt.get("start") == batch["start"]:
+                    ckpt_segs = list(seg_dicts[batch["start"]:batch["start"] + batch["count"]])
+                    for i, t in enumerate(ckpt.get("translations", [])):
+                        if t and i < len(ckpt_segs):
+                            tm_entries.append((ckpt_segs[i]['text'], t))
+                else:
+                    logger.warning(f"Batch {batch['batch_id']}: stale checkpoint ignored during TM hydration")
+        if tm_entries:
+            _append_translation_memory_batch(tm_entries)
+            logger.info(f"Loaded {len(tm_entries)} TM entries from checkpoints")
+        else:
+            logger.info("No checkpointed translations to load into TM")
+
         translate_batch(
             segments        = seg_dicts,
             prompt_template = LT_PROMPT,
@@ -670,7 +823,22 @@ def run():
         )
 
         # ── Phase 4: Aggregate per-batch checkpoints ──────────────────────
-        translations = aggregate_checkpoints(batches, len(paragraphs))
+        translations, empty_indices = aggregate_checkpoints(batches, len(paragraphs))
+
+        # ── Flag empty segments as must_fix ──
+        if empty_indices:
+            flags = [
+                {
+                    "paragraph_index":    idx,
+                    "flag_level":         "must_fix",
+                    "flag_type":          "missing_translation",
+                    "source_segment":     paragraphs[idx] if idx < len(paragraphs) else "",
+                    "translated_segment": "",
+                }
+                for idx in empty_indices
+            ]
+            write_qa_flags(flags, job_type="lt_preprocess_nmt")
+            logger.warning(f"Marked {len(flags)} empty segments as must_fix")
 
         # ── Phase 5: Cleanup File Search Store ────────────────────────────
         if store_name:

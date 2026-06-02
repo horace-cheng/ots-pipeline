@@ -154,7 +154,7 @@ CLOUDBUILD
       --vpc-egress=private-ranges-only \
       --set-secrets="DB_URL=ots-db-url-${ENV}:latest,GOOGLE_AI_API_KEY=ots-google-ai-key-${ENV}:latest" \
       --set-env-vars="$COMMON_ENV" \
-      --max-retries=2 \
+      --max-retries=5 \
       --task-timeout="$TIMEOUT" \
       --memory="$MEMORY" \
       --cpu="$CPU" \
@@ -172,7 +172,7 @@ CLOUDBUILD
       --vpc-egress=private-ranges-only \
       --set-secrets="DB_URL=ots-db-url-${ENV}:latest,GOOGLE_AI_API_KEY=ots-google-ai-key-${ENV}:latest" \
       --set-env-vars="$COMMON_ENV" \
-      --max-retries=2 \
+      --max-retries=5 \
       --task-timeout="$TIMEOUT" \
       --memory="$MEMORY" \
       --cpu="$CPU" \
