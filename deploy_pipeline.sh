@@ -65,6 +65,34 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --quiet
 ok "Vertex AI 權限確認完成"
 
+# ── 設定 Pipeline Temp Bucket 的生命週期規則（僅 dev）────────────────────────
+if [[ "$ENV" == "dev" ]]; then
+  TEMP_BUCKET="${PROJECT_ID}-pipeline-temp-${ENV}"
+  log "設定 Temp Bucket 生命週期規則: ${TEMP_BUCKET}..."
+  LIFECYCLE_FILE="$(mktemp)"
+  cat > "$LIFECYCLE_FILE" <<'LIFECYCLE'
+{
+  "lifecycle": {
+    "rule": [
+      {"action": {"type": "SetStorageClass", "storageClass": "NEARLINE"}, "condition": {"age": 7}},
+      {"action": {"type": "SetStorageClass", "storageClass": "COLDLINE"},  "condition": {"age": 30}},
+      {"action": {"type": "SetStorageClass", "storageClass": "ARCHIVE"},   "condition": {"age": 60}},
+      {"action": {"type": "Delete"},                                       "condition": {"age": 180}}
+    ]
+  }
+}
+LIFECYCLE
+  if gsutil ls "gs://${TEMP_BUCKET}" &>/dev/null; then
+    gsutil lifecycle set "$LIFECYCLE_FILE" "gs://${TEMP_BUCKET}"
+    ok "Temp bucket lifecycle rules applied: 7d→Nearline 30d→Coldline 60d→Archive 180d→Delete"
+  else
+    warn "Temp bucket ${TEMP_BUCKET} does not exist — skipping lifecycle setup"
+  fi
+  rm -f "$LIFECYCLE_FILE"
+else
+  log "Skipping temp bucket lifecycle rules for ${ENV} (dev only)"
+fi
+
 # ── 建置並部署每個 Job ────────────────────────────────────────────────────────
 deployed=0
 for job_spec in "${JOBS[@]}"; do
