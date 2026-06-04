@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from shared.config     import cfg
 from shared.db         import update_job_status, get_order_info, update_order_field
 from shared.storage    import read_temp_json, write_temp_json
+from shared.versions  import save_translation_version
 from shared.gemini     import translate
 from shared.terminology import get_terms
 
@@ -295,6 +296,7 @@ def run():
         ]
         write_temp_json("translations_raw.json", translations)
         write_temp_json("translations.json",     translations)
+        save_translation_version(cfg.ORDER_ID, source="nmt")
 
         update_job_status("nmt", "success")
         logger.info(f"=== ft_nmt DONE — {len(translations)} segments translated ===")

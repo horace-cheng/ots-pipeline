@@ -164,10 +164,10 @@ def aggregate_checkpoints(
 ) -> tuple[list[str], list[int]]:
     """Aggregate all per-batch checkpoint files into an ordered translation list.
 
-    Reads every checkpoint_batch_{id}.json and validates that all batch files
-    exist.  Empty translations are logged as warnings and their indices are
-    returned in the second element of the tuple for downstream QA flagging
-    (instead of raising).
+    Reads every checkpoint_batch_{id}.json.  Missing checkpoints (e.g. after
+    repeated retry failures) are treated as empty — the indices are logged
+    and returned for downstream QA flagging instead of raising, so the job
+    can still complete and produce a version snapshot.
     """
     translations = [""] * total_segments
     empty_indices: list[int] = []
@@ -179,17 +179,21 @@ def aggregate_checkpoints(
 
         ckpt = load_batch_checkpoint(batch_id)
         if ckpt is None:
-            raise RuntimeError(
+            logger.warning(
                 f"Missing checkpoint for batch {batch_id} — "
-                f"cannot aggregate incomplete results"
+                f"marking all {count} segments as must_fix"
             )
+            empty_indices.extend(range(start, start + count))
+            continue
 
         parts = ckpt.get("translations", [])
         if len(parts) != count:
-            raise RuntimeError(
+            logger.warning(
                 f"Checkpoint batch {batch_id}: expected {count} translations, "
-                f"got {len(parts)}"
+                f"got {len(parts)} — marking excess as must_fix"
             )
+            empty_indices.extend(range(start + len(parts), start + count))
+            parts = parts + [""] * (count - len(parts))
 
         for offset, t in enumerate(parts):
             idx = start + offset

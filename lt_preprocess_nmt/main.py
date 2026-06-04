@@ -25,6 +25,7 @@ from shared.storage import (
     save_batch_checkpoint, load_batch_checkpoint,
     aggregate_checkpoints,
 )
+from shared.versions import save_translation_version
 from shared.gemini  import (
     translate, create_file_search_store, upload_to_file_search_store,
     delete_file_search_store, upload_file_to_gemini, delete_gemini_file,
@@ -858,6 +859,7 @@ def run():
         write_temp_json("translations.json",      translations_out)
         write_temp_json("translations_raw.json",   translations_out)
         write_temp_json("metadata.json",           metadata)
+        save_translation_version(cfg.ORDER_ID, source="nmt")
 
         update_job_status("lt_preprocess_nmt", "success")
         logger.info(

@@ -165,7 +165,12 @@ def get_sample_package() -> dict | None:
 
 
 def write_qa_flags(flags: list[dict], job_type: str = "qa_auto"):
-    """批次寫入 QA flags。job_type 預設 'qa_auto'（Fast Track），LT 可傳 'lt_qa_checklist'。"""
+    """批次寫入 QA flags。job_type 預設 'qa_auto'（Fast Track），LT 可傳 'lt_qa_checklist'。
+
+    For same order + same paragraph_index + same flag_type, only the latest
+    record is kept — any existing flag for that combination is deleted before
+    the new one is inserted.
+    """
     if not flags:
         return
     with get_db() as db:
@@ -180,13 +185,24 @@ def write_qa_flags(flags: list[dict], job_type: str = "qa_auto"):
         job_id = str(job_row.id)
         for flag in flags:
             db.execute(text("""
+                DELETE FROM qa_flags
+                WHERE paragraph_index = :para_idx
+                  AND flag_type = CAST(:flag_type AS flag_type)
+                  AND job_id IN (
+                      SELECT id FROM pipeline_jobs WHERE order_id = :order_id
+                  )
+            """), {
+                "para_idx":  flag["paragraph_index"],
+                "flag_type": flag["flag_type"],
+                "order_id":  cfg.ORDER_ID,
+            })
+            db.execute(text("""
                 INSERT INTO qa_flags
                     (job_id, paragraph_index, flag_level, flag_type,
                      source_segment, translated_segment)
                 VALUES
                     (:job_id, :para_idx, :flag_level, :flag_type,
                      :source, :translated)
-                ON CONFLICT DO NOTHING
             """), {
                 "job_id":     job_id,
                 "para_idx":   flag["paragraph_index"],

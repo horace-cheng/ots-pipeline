@@ -25,8 +25,8 @@ class PipelineConfig:
     WEB_PORTAL_URL:  str = os.environ.get("WEB_PORTAL_URL", "https://ots-frontend-dev-miptn5nxpa-de.a.run.app")
 
     # Vertex AI / Gemini
-    GEMINI_PRO_MODEL:   str = "gemini-2.5-flash"
-    GEMINI_FLASH_MODEL: str = "gemini-2.5-flash"
+    GEMINI_PRO_MODEL:   str = "gemini-3.5-flash"
+    GEMINI_FLASH_MODEL: str = "gemini-3.5-flash"
 
     # Token pricing (USD per 1M tokens)
     MODEL_PRICING: dict[str, dict[str, float]] = {
@@ -37,6 +37,10 @@ class PipelineConfig:
         "gemini-2.5-flash": {
             "input":  float(os.environ.get("GEMINI_FLASH_INPUT_COST", "0.30")),
             "output": float(os.environ.get("GEMINI_FLASH_OUTPUT_COST", "2.50")),
+        },
+        "gemini-3.5-flash": {
+            "input":  float(os.environ.get("GEMINI_35_FLASH_INPUT_COST", "0.50")),
+            "output": float(os.environ.get("GEMINI_35_FLASH_OUTPUT_COST", "3.00")),
         },
     }
 
