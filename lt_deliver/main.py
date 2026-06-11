@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config  import cfg
 from shared.db import update_job_status, get_order_info, update_order_field, get_lang_labels, get_db, get_sample_package
+from shared.deliver_html import html_text, render_doc, table_open, table_close
 from shared.storage import read_temp_json, write_output
 
 logging.basicConfig(level=logging.INFO,
@@ -142,6 +143,93 @@ def _l10n(tgt_lang: str, key: str) -> str:
     return _LABEL_TRANSLATIONS[lang_code].get(key, key)
 
 
+def _render_lit_package(sample_pkg: dict | None, tgt_code: str) -> str:
+    """Render the literary package (book fact sheet, synopsis, bio, market) as
+    a styled ``.lit-package`` card. Returns empty string if ``sample_pkg`` is
+    empty or only has empty fields.
+    """
+    if not sample_pkg:
+        return ""
+
+    parts: list[str] = []
+
+    # ── Book fact sheet ────────────────────────────────────────────────
+    bfs = sample_pkg.get("book_fact_sheet") or {}
+    if isinstance(bfs, str):
+        try:
+            bfs = json.loads(bfs)
+        except Exception:
+            bfs = {}
+
+    field_rows: list[str] = []
+    for orig_k, tgt_k, label_key in _FIELD_LABELS:
+        orig_v = bfs.get(orig_k, "")
+        tgt_v  = bfs.get(tgt_k, "")
+        if orig_v or tgt_v:
+            field_rows.append(
+                f'<div class="field-row">'
+                f'<span class="field">{_l10n(tgt_code, label_key)}</span>'
+                f'<strong>{_escape(orig_v)}</strong>　·　'
+                f'{_escape(tgt_v)}'
+                f'</div>'
+            )
+    wc = bfs.get("word_count", "")
+    if wc:
+        field_rows.append(
+            f'<div class="field-row">'
+            f'<span class="field">{_l10n(tgt_code, "word_count")}</span>'
+            f'{_escape(wc)}'
+            f'</div>'
+        )
+
+    if field_rows:
+        parts.append(
+            f'<h2>{_l10n(tgt_code, "book_fact_sheet")}</h2>'
+            + "".join(field_rows)
+        )
+
+    # ── Synopsis ───────────────────────────────────────────────────────
+    synopsis = sample_pkg.get("synopsis", "")
+    if synopsis:
+        parts.append(
+            f'<h2>{_l10n(tgt_code, "synopsis")}</h2>'
+            f'<div class="synopsis">{_md_to_html(synopsis)}</div>'
+        )
+
+    # ── Translator bio ─────────────────────────────────────────────────
+    bio = sample_pkg.get("translator_bio", "")
+    if bio:
+        parts.append(
+            f'<h2>{_l10n(tgt_code, "translator_bio")}</h2>'
+            f'<div class="bio">{_md_to_html(bio)}</div>'
+        )
+
+    # ── Market analysis ────────────────────────────────────────────────
+    market = sample_pkg.get("market_analysis", "")
+    if market:
+        parts.append(
+            f'<h2>{_l10n(tgt_code, "market_analysis")}</h2>'
+            f'<div class="market">{_md_to_html(market)}</div>'
+        )
+
+    if not parts:
+        return ""
+
+    return f'<section class="lit-package">{"".join(parts)}</section>'
+
+
+def _escape(text: str) -> str:
+    """Lightweight HTML escape for trusted, server-generated strings."""
+    if text is None:
+        return ""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def _md_to_html(text: str) -> str:
     """Convert basic markdown to HTML for delivery output."""
     import re
@@ -250,120 +338,40 @@ def format_html(translations: list[dict], metadata: dict,
     src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), "")
     tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), "")
     tgt_code = metadata.get("target_lang", "zh-tw")
-    now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    pkg_html = ""
-    if sample_pkg:
-        parts = []
-        bfs = sample_pkg.get("book_fact_sheet") or {}
-        if isinstance(bfs, str):
-            bfs = __import__("json").loads(bfs)
-        fact_rows = ""
-        for orig_k, tgt_k, label_key in _FIELD_LABELS:
-            orig_v = bfs.get(orig_k, "")
-            tgt_v  = bfs.get(tgt_k, "")
-            label = _l10n(tgt_code, label_key)
-            if orig_v or tgt_v:
-                fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>{label}</td><td style='padding:4px 8px;font-size:0.9rem'>{orig_v}</td><td style='padding:4px 8px;font-size:0.9rem'>{tgt_v}</td></tr>\n"
-        wc = bfs.get("word_count", "")
-        if wc:
-            fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>{_l10n(tgt_code, 'word_count')}</td><td colspan='2' style='padding:4px 8px;font-size:0.9rem'>{wc}</td></tr>\n"
-
-        if fact_rows:
-            parts.append(f"""
-<div style='margin-bottom:2rem'>
-<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'book_fact_sheet')}</h2>
-<table style='width:100%;border-collapse:collapse'>
-<thead><tr style='border-bottom:1px solid #ddd'><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'field')}</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'original')}</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'translation')}</th></tr></thead>
-<tbody>
-{fact_rows}
-</tbody>
-</table>
-</div>""")
-
-        synopsis = sample_pkg.get("synopsis", "")
-        if synopsis:
-            parts.append(f"""
-<div style='margin-bottom:2rem'>
-<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'synopsis')}</h2>
-{_md_to_html(synopsis)}
-</div>""")
-
-        bio = sample_pkg.get("translator_bio", "")
-        if bio:
-            parts.append(f"""
-<div style='margin-bottom:2rem'>
-<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'translator_bio')}</h2>
-{_md_to_html(bio)}
-</div>""")
-
-        market = sample_pkg.get("market_analysis", "")
-        if market:
-            parts.append(f"""
-<div style='margin-bottom:2rem'>
-<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'market_analysis')}</h2>
-{_md_to_html(market)}
-</div>""")
-
-        if parts:
-            pkg_html = f"""
-<div style='margin-bottom:2.5rem;padding:1.5rem;background:#FAFAFE;border-radius:8px;border:1px solid #E8E0F7'>
-{''.join(parts)}
-</div>
-<hr style='border:none;border-top:2px solid #8B5CF6;margin-bottom:2rem'>"""
-
-    def _html(text: str) -> str:
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+    pkg_html = _render_lit_package(sample_pkg, tgt_code)
 
     para_html = "\n".join(
-        f"<p class='para'>{_html(trans['translated'])}</p>"
+        f'<p class="para">{html_text(trans["translated"])}</p>'
         for trans in sorted(translations, key=lambda x: x["index"])
     )
 
-    qa_score = ""
+    extra_meta = ""
     if qa_result and qa_result.get("layer4_llm_judge"):
         score = qa_result["layer4_llm_judge"].get("score", "")
-        qa_score = f"<span class='qa-score'>{_l10n(tgt_code, 'qa_score')}：{score}/100</span>"
+        if score:
+            extra_meta = (
+                f'<span class="qa-score">'
+                f'{_l10n(tgt_code, "qa_score")}：{score}/100</span>'
+            )
 
-    return f"""<!DOCTYPE html>
-<html lang="{metadata.get('target_lang', 'en')}">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{_l10n(tgt_code, 'title')} — {order}</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Noto+Sans:wght@400;700&family=Iansui:wght@400;700&display=swap');
-  body {{ font-family: 'Iansui', 'Noto Sans TC', 'Noto Sans', system-ui, -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; color: #333; }}
-  header {{ border-bottom: 2px solid #8B5CF6; padding-bottom: 1rem; margin-bottom: 2rem; }}
-  h1 {{ color: #8B5CF6; font-size: 1.4rem; margin-bottom: 0.5rem; }}
-  .meta {{ color: #666; font-size: 0.9rem; }}
-  .para {{ line-height: 1.8; margin-bottom: 1.2em; text-align: justify; }}
-  .qa-score {{ display: inline-block; background: #F3E8FF; color: #7C3AED;
-               padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.85rem; }}
-  footer {{ margin-top: 3rem; border-top: 1px solid #ccc; padding-top: 1rem;
-            color: #999; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<header>
-  <h1>{_l10n(tgt_code, 'title')}</h1>
-  <div class="meta">
-    <span>{_l10n(tgt_code, 'order')}：{order}</span> &nbsp;|&nbsp;
-    <span>{_l10n(tgt_code, 'lang_dir')}：{src_lang} → {tgt_lang}</span> &nbsp;|&nbsp;
-    <span>{_l10n(tgt_code, 'delivery_date')}：{now}</span>
-    {f'&nbsp;|&nbsp; {qa_score}' if qa_score else ''}
-  </div>
-</header>
-<main>
-{pkg_html}
-{para_html}
-</main>
-<footer>
-  {_l10n(tgt_code, 'footer')}<br>
-  {_l10n(tgt_code, 'footer_contact')}
-</footer>
-</body>
-</html>"""
+    body = pkg_html + (f'<div class="para-flow">{para_html}</div>' if para_html else "")
+
+    return render_doc(
+        title=f"{_l10n(tgt_code, 'title')} — {order or 'Literary Track'}",
+        body_html=body,
+        eyebrow=_l10n(tgt_code, "title"),
+        source_lang=src_lang,
+        target_lang=tgt_lang,
+        page_subtitle=f"{src_lang} → {tgt_lang} 譯文",
+        page_description=(
+            f"<b>{_l10n(tgt_code, 'order')}：</b>{order or '—'}　·　"
+            f"<b>{_l10n(tgt_code, 'lang_dir')}：</b>{src_lang} → {tgt_lang}"
+        ) if order else None,
+        extra_meta=extra_meta,
+        order_id=order,
+        html_lang=tgt_code or "zh-Hant",
+    )
 
 
 def format_bilingual_html(translations: list[dict], metadata: dict,
@@ -373,94 +381,43 @@ def format_bilingual_html(translations: list[dict], metadata: dict,
     src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), metadata.get("source_lang", ""))
     tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), metadata.get("target_lang", ""))
     tgt_code = metadata.get("target_lang", "zh-tw")
-    now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    pkg_html = ""
-    if sample_pkg:
-        parts = []
-        bfs = sample_pkg.get("book_fact_sheet") or {}
-        if isinstance(bfs, str):
-            bfs = __import__("json").loads(bfs)
-        fact_rows = ""
-        for orig_k, tgt_k, label_key in _FIELD_LABELS:
-            orig_v = bfs.get(orig_k, "")
-            tgt_v  = bfs.get(tgt_k, "")
-            label = _l10n(tgt_code, label_key)
-            if orig_v or tgt_v:
-                fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>{label}</td><td style='padding:4px 8px;font-size:0.9rem'>{orig_v}</td><td style='padding:4px 8px;font-size:0.9rem'>{tgt_v}</td></tr>\n"
-        wc = bfs.get("word_count", "")
-        if wc:
-            fact_rows += f"<tr><td style='padding:4px 8px;font-size:0.85rem;color:#666;white-space:nowrap'>{_l10n(tgt_code, 'word_count')}</td><td colspan='2' style='padding:4px 8px;font-size:0.9rem'>{wc}</td></tr>\n"
+    pkg_html = _render_lit_package(sample_pkg, tgt_code)
 
-        if fact_rows:
-            parts.append(f"""
-<div style='margin-bottom:2rem'>
-<h2 style='color:#8B5CF6;font-size:1.1rem;margin-bottom:0.5rem'>{_l10n(tgt_code, 'book_fact_sheet')}</h2>
-<table style='width:100%;border-collapse:collapse'>
-<thead><tr style='border-bottom:1px solid #ddd'><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'field')}</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'original')}</th><th style='padding:4px 8px;text-align:left;font-size:0.8rem;color:#999'>{_l10n(tgt_code, 'translation')}</th></tr></thead>
-<tbody>
-{fact_rows}
-</tbody>
-</table>
-</div>""")
+    rows_html: list[str] = []
+    for trans in sorted(translations, key=lambda x: x["index"]):
+        seg_num = f'<span class="seg-num">{trans["index"] + 1}</span>'
+        rows_html.append(
+            f"<tr>"
+            f"<td class='src'>{seg_num}{html_text(trans.get('source', ''))}</td>"
+            f"<td class='trans'>{html_text(trans.get('translated', ''))}</td>"
+            f"</tr>"
+        )
 
-    def _html(text: str) -> str:
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-
-    rows_html = "\n".join(
-        f"""<tr>
-  <td class='src'>{_html(trans['source'])}</td>
-  <td class='tgt'>{_html(trans['translated'])}</td>
-</tr>"""
-        for trans in sorted(translations, key=lambda x: x["index"])
+    body = (
+        pkg_html
+        + table_open(2, [
+            f"{_l10n(tgt_code, 'original')}（{src_lang}）",
+            f"{_l10n(tgt_code, 'translation')}（{tgt_lang}）",
+        ])
+        + "\n".join(rows_html)
+        + table_close()
     )
 
-    return f"""<!DOCTYPE html>
-<html lang="{tgt_code}">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{_l10n(tgt_code, 'title')}（對照版） — {order}</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Noto+Sans:wght@400;700&family=Iansui:wght@400;700&display=swap');
-  body {{ font-family: 'Iansui', 'Noto Sans TC', 'Noto Sans', system-ui, -apple-system, sans-serif; max-width: 1000px; margin: 0 auto; padding: 2rem; color: #333; }}
-  header {{ border-bottom: 2px solid #8B5CF6; padding-bottom: 1rem; margin-bottom: 2rem; }}
-  h1 {{ color: #8B5CF6; font-size: 1.4rem; margin-bottom: 0.5rem; }}
-  .meta {{ color: #666; font-size: 0.9rem; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  th {{ background: #f5f5f5; padding: 10px 12px; text-align: left; font-size: 0.85rem; color: #666; border-bottom: 2px solid #8B5CF6; }}
-  td {{ padding: 10px 12px; border-bottom: 1px solid #eee; vertical-align: top; line-height: 1.8; text-align: justify; }}
-  .src {{ width: 50%; background: #fafafa; }}
-  .tgt {{ width: 50%; }}
-  footer {{ margin-top: 3rem; border-top: 1px solid #ccc; padding-top: 1rem; color: #999; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<header>
-  <h1>{_l10n(tgt_code, 'title')}（原文／譯文對照）</h1>
-  <div class="meta">
-    <span>{_l10n(tgt_code, 'order')}：{order}</span> &nbsp;|&nbsp;
-    <span>{_l10n(tgt_code, 'lang_dir')}：{src_lang} → {tgt_lang}</span> &nbsp;|&nbsp;
-    <span>{_l10n(tgt_code, 'delivery_date')}：{now}</span>
-  </div>
-</header>
-<main>
-{pkg_html}
-<table>
-<thead>
-  <tr><th>{_l10n(tgt_code, 'original')}（{src_lang}）</th><th>{_l10n(tgt_code, 'translation')}（{tgt_lang}）</th></tr>
-</thead>
-<tbody>
-{rows_html}
-</tbody>
-</table>
-</main>
-<footer>
-  {_l10n(tgt_code, 'footer')}<br>
-  {_l10n(tgt_code, 'footer_contact')}
-</footer>
-</body>
-</html>"""
+    return render_doc(
+        title=f"{_l10n(tgt_code, 'title')}（對照版） — {order or 'Literary Track'}",
+        body_html=body,
+        eyebrow=f"{_l10n(tgt_code, 'title')}（原文／譯文對照）",
+        source_lang=src_lang,
+        target_lang=tgt_lang,
+        page_subtitle="原文 / 譯文 逐段對照",
+        page_description=(
+            f"<b>{_l10n(tgt_code, 'order')}：</b>{order or '—'}　·　"
+            f"<b>{_l10n(tgt_code, 'lang_dir')}：</b>{src_lang} → {tgt_lang}"
+        ) if order else None,
+        order_id=order,
+        html_lang=tgt_code or "zh-Hant",
+    )
 
 
 def write_corpus(translations: list[dict], metadata: dict):

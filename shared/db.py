@@ -102,7 +102,7 @@ def get_order_info() -> dict:
 
 def update_order_field(field: str, value: str):
     """更新訂單單一欄位"""
-    allowed = {"gcs_upload_path", "gcs_output_path", "gcs_bilingual_output_path", "gcs_plain_text_output_path", "term_dict_id", "status"}
+    allowed = {"title", "gcs_upload_path", "gcs_output_path", "gcs_bilingual_output_path", "gcs_plain_text_output_path", "term_dict_id", "status"}
     if field not in allowed:
         raise ValueError(f"Field not allowed: {field}")
     with get_db() as db:

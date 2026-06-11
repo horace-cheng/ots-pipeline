@@ -50,6 +50,35 @@ def read_temp_text(filename: str) -> str:
     return bucket.blob(_temp_path(filename)).download_as_text(encoding="utf-8")
 
 
+def write_temp_text(filename: str, content: str) -> str:
+    """寫入純文字中間產物到 temp bucket，回傳 GCS path"""
+    client   = get_client()
+    bucket   = client.bucket(cfg.BUCKET_TEMP)
+    gcs_path = _temp_path(filename)
+    bucket.blob(gcs_path).upload_from_string(content.encode("utf-8"), content_type="text/plain")
+    logger.info(f"Written temp text: {gcs_path} ({len(content)} chars)")
+    return f"gs://{cfg.BUCKET_TEMP}/{gcs_path}"
+
+
+def list_temp_blobs(prefix: str) -> list[str]:
+    """列出 temp bucket 中以 prefix 開頭的所有 blob 檔名（不含 bucket path）"""
+    client = get_client()
+    bucket = client.bucket(cfg.BUCKET_TEMP)
+    full_prefix = _temp_path(prefix)
+    blobs = list(bucket.list_blobs(prefix=full_prefix))
+    return [b.name.split("pipeline/" + cfg.ORDER_ID + "/", 1)[-1] for b in blobs if not b.name.endswith("/")]
+
+
+def temp_blob_exists(filename: str) -> bool:
+    """Return True if a blob exists at `pipeline/{ORDER_ID}/{filename}` in
+    the temp bucket. Used as a cheap "checkpoint exists" check by gt_process_chunk
+    so a retried job can skip chunks that were already translated."""
+    client = get_client()
+    bucket = client.bucket(cfg.BUCKET_TEMP)
+    blob = bucket.blob(_temp_path(filename))
+    return blob.exists()
+
+
 # ── 寫入 ──────────────────────────────────────────────────────────────────────
 def write_temp_json(filename: str, data: dict | list):
     """寫入 JSON 中間產物到 temp bucket"""

@@ -24,6 +24,13 @@ class PipelineConfig:
     # Frontend URL (for serving static assets like fonts in deliverable HTML)
     WEB_PORTAL_URL:  str = os.environ.get("WEB_PORTAL_URL", "https://ots-frontend-dev-miptn5nxpa-de.a.run.app")
 
+    # API base URL (for Cloud Tasks notification callbacks)
+    # Override via API_BASE_URL env var for each environment.
+    API_BASE_URL:    str = os.environ.get(
+        "API_BASE_URL",
+        f"https://ots-api-backend-{os.environ.get('ENV', 'dev')}-miptn5nxpa-de.a.run.app"
+    )
+
     # Vertex AI / Gemini
     GEMINI_PRO_MODEL:   str = "gemini-3.5-flash"
     GEMINI_FLASH_MODEL: str = "gemini-3.5-flash"

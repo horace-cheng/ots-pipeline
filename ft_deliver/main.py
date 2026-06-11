@@ -8,6 +8,9 @@ Fast Track Step 4: 格式化交付
 - 更新 orders.status → delivered
 - 觸發 email 通知（透過 Cloud Tasks）
 - 寫入 BigQuery corpus（若 consent_given = true）
+
+HTML uses the shared ``shared.deliver_html`` template for a clean,
+book-style reading experience.
 """
 
 import sys, json, re, logging, os
@@ -19,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config  import cfg
 from shared.db      import update_job_status, get_order_info, update_order_field, get_db, get_lang_labels
+from shared.deliver_html import html_text, render_doc, table_open, table_close
 from shared.storage import read_temp_json, write_output
 from shared.gemini  import judge
 
@@ -73,126 +77,71 @@ def format_html(translations: list[dict], metadata: dict,
                 qa_result: dict | None = None) -> str:
     """產生 HTML 格式譯文（帶基本樣式）"""
     order    = metadata.get("order_id", "")
-    src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), "")
-    tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), "")
-    now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    def _html(text: str) -> str:
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+    src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), metadata.get("source_lang", ""))
+    tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), metadata.get("target_lang", ""))
 
     para_html = "\n".join(
-        f"<p class='para'>{_html(trans['translated'])}</p>"
+        f'<p class="para">{html_text(trans["translated"])}</p>'
         for trans in sorted(translations, key=lambda x: x["index"])
     )
 
-    qa_score = ""
+    extra_meta = ""
     if qa_result and qa_result.get("layer4_llm_judge"):
         score = qa_result["layer4_llm_judge"].get("score", "")
-        qa_score = f"<span class='qa-score'>QA 評分：{score}/100</span>"
+        if score:
+            extra_meta = f'<span class="qa-score">QA 評分：{score}/100</span>'
 
-    return f"""<!DOCTYPE html>
-<html lang="{metadata.get('target_lang', 'en')}">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OTS 翻譯 — {order}</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Noto+Sans:wght@400;700&family=Iansui:wght@400;700&display=swap');
-  body {{ font-family: 'Iansui', 'Noto Sans TC', 'Noto Sans', system-ui, -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; color: #333; }}
-  header {{ border-bottom: 2px solid #1F497D; padding-bottom: 1rem; margin-bottom: 2rem; }}
-  h1 {{ color: #1F497D; font-size: 1.4rem; margin-bottom: 0.5rem; }}
-  .meta {{ color: #666; font-size: 0.9rem; }}
-  .para {{ line-height: 1.8; margin-bottom: 1.2em; text-align: justify; }}
-  .qa-score {{ display: inline-block; background: #EAF3DE; color: #3B6D11;
-               padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.85rem; }}
-  footer {{ margin-top: 3rem; border-top: 1px solid #ccc; padding-top: 1rem;
-            color: #999; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<header>
-  <h1>OTS 翻譯服務 — Fast Track</h1>
-  <div class="meta">
-    <span>訂單：{order}</span> &nbsp;|&nbsp;
-    <span>{src_lang} → {tgt_lang}</span> &nbsp;|&nbsp;
-    <span>{now}</span>
-    {f'&nbsp;|&nbsp; {qa_score}' if qa_score else ''}
-  </div>
-</header>
-<main>
-{para_html}
-</main>
-<footer>
-  本譯文由 OTS 翻譯服務（AI 輔助翻譯）提供。
-  如有疑問請聯繫 service@ots.tw
-</footer>
-</body>
-</html>"""
+    return render_doc(
+        title=f"OTS 翻譯 — {order or 'Fast Track'}",
+        body_html=f'<div class="para-flow">{para_html}</div>',
+        eyebrow="OTS 翻譯服務 — Fast Track",
+        source_lang=src_lang,
+        target_lang=tgt_lang,
+        page_subtitle=f"{src_lang} → {tgt_lang} 譯文",
+        page_description=(
+            f"<b>訂單編號：</b>{order or '—'}　·　"
+            f"<b>語言方向：</b>{src_lang} → {tgt_lang}"
+        ) if order else None,
+        extra_meta=extra_meta,
+        order_id=order,
+    )
 
 
 def format_bilingual_html(translations: list[dict], metadata: dict) -> str:
     """產生原文＋譯文對照 HTML（左右雙欄）"""
-    def _html(text: str) -> str:
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-
     order    = metadata.get("order_id", "")
     src_lang = LANG_LABELS.get(metadata.get("source_lang", ""), metadata.get("source_lang", ""))
     tgt_lang = LANG_LABELS.get(metadata.get("target_lang", ""), metadata.get("target_lang", ""))
-    now      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    rows_html = "\n".join(
-        f"""<tr>
-  <td class='src'>{_html(trans['source'])}</td>
-  <td class='tgt'>{_html(trans['translated'])}</td>
-</tr>"""
-        for trans in sorted(translations, key=lambda x: x["index"])
+    rows_html = []
+    for trans in sorted(translations, key=lambda x: x["index"]):
+        seg_num = f'<span class="seg-num">{trans["index"] + 1}</span>'
+        rows_html.append(
+            f"<tr>"
+            f"<td class='src'>{seg_num}{html_text(trans.get('source', ''))}</td>"
+            f"<td class='trans'>{html_text(trans.get('translated', ''))}</td>"
+            f"</tr>"
+        )
+
+    body = (
+        table_open(2, [f"原文（{src_lang}）", f"譯文（{tgt_lang}）"])
+        + "\n".join(rows_html)
+        + table_close()
     )
 
-    return f"""<!DOCTYPE html>
-<html lang="{metadata.get('target_lang', 'en')}">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OTS 翻譯對照 — {order}</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Noto+Sans:wght@400;700&family=Iansui:wght@400;700&display=swap');
-  body {{ font-family: 'Iansui', 'Noto Sans TC', 'Noto Sans', system-ui, -apple-system, sans-serif; max-width: 1000px; margin: 0 auto; padding: 2rem; color: #333; }}
-  header {{ border-bottom: 2px solid #1F497D; padding-bottom: 1rem; margin-bottom: 2rem; }}
-  h1 {{ color: #1F497D; font-size: 1.4rem; margin-bottom: 0.5rem; }}
-  .meta {{ color: #666; font-size: 0.9rem; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  th {{ background: #f5f5f5; padding: 10px 12px; text-align: left; font-size: 0.85rem; color: #666; border-bottom: 2px solid #1F497D; }}
-  td {{ padding: 10px 12px; border-bottom: 1px solid #eee; vertical-align: top; line-height: 1.8; text-align: justify; }}
-  .src {{ width: 50%; background: #fafafa; }}
-  .tgt {{ width: 50%; }}
-  footer {{ margin-top: 3rem; border-top: 1px solid #ccc; padding-top: 1rem; color: #999; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<header>
-  <h1>OTS 翻譯服務 — 原文／譯文對照</h1>
-  <div class="meta">
-    <span>訂單：{order}</span> &nbsp;|&nbsp;
-    <span>{src_lang} → {tgt_lang}</span> &nbsp;|&nbsp;
-    <span>{now}</span>
-  </div>
-</header>
-<main>
-<table>
-<thead>
-  <tr><th>原文（{src_lang}）</th><th>譯文（{tgt_lang}）</th></tr>
-</thead>
-<tbody>
-{rows_html}
-</tbody>
-</table>
-</main>
-<footer>
-  本對照譯文由 OTS 翻譯服務（AI 輔助翻譯）提供。
-  如有疑問請聯繫 service@ots.tw
-</footer>
-</body>
-</html>"""
+    return render_doc(
+        title=f"OTS 翻譯對照 — {order or 'Fast Track'}",
+        body_html=body,
+        eyebrow="OTS 翻譯服務 — 原文／譯文對照",
+        source_lang=src_lang,
+        target_lang=tgt_lang,
+        page_subtitle="原文 / 譯文 逐段對照",
+        page_description=(
+            f"<b>訂單編號：</b>{order or '—'}　·　"
+            f"<b>語言方向：</b>{src_lang} → {tgt_lang}"
+        ) if order else None,
+        order_id=order,
+    )
 
 
 def write_corpus(translations: list[dict], metadata: dict, qa_result: dict | None):
@@ -264,7 +213,7 @@ def notify_delivery():
         task = {
             "http_request": {
                 "http_method": tasks_v2.HttpMethod.POST,
-                "url": f"https://ots-api-backend-{cfg.ENV}-{cfg.PROJECT_ID}.asia-east1.run.app/internal/notify",
+                "url": f"{cfg.API_BASE_URL}/internal/notify",
                 "headers": {"Content-Type": "application/json"},
                 "body": payload.encode(),
                 "oidc_token": {
