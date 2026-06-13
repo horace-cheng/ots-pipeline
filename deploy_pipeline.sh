@@ -321,7 +321,7 @@ if [[ "$BUILD_ONLY" == "false" ]]; then
       - '--network=default'
       - '--subnet=default'
       - '--vpc-egress=private-ranges-only'
-      - '--set-secrets=DB_URL=ots-db-url-${ENV}:latest,GOOGLE_AI_API_KEY=ots-google-ai-key-${ENV}:latest,BRONCI_API_USERNAME=ots-bronci-username-${ENV}:latest,BRONCI_API_PASSWORD=ots-bronci-password-${ENV}:latest,BRONCI_API_BASE_URL=ots-bronci-base-url-${ENV}:latest,HF_API_TOKEN=ots-hf-api-token-${ENV}:latest,REPLICATE_API_TOKEN=ots-replicate-api-token-${ENV}:latest'
+      - '--set-secrets=DB_URL=ots-db-url-${ENV}:latest,GOOGLE_AI_API_KEY=ots-google-ai-key-${ENV}:latest,BRONCI_API_USERNAME=ots-bronci-username-${ENV}:latest,BRONCI_API_PASSWORD=ots-bronci-password-${ENV}:latest,BRONCI_API_BASE_URL=ots-bronci-base-url-${ENV}:latest,HF_API_TOKEN=ots-hf-api-token-${ENV}:latest,REPLICATE_API_TOKEN=ots-replicate-api-token-${ENV}:latest,NVIDIA_API_TOKEN=ots-nvidia-api-token-${ENV}:latest'
       - '--set-env-vars=\${_COMMON_ENV}'
       - '--max-retries=5'
       - '--task-timeout=${TIMEOUT}'
