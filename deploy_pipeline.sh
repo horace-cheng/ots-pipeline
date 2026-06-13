@@ -3,10 +3,10 @@
 # OTS — Pipeline Jobs 部署腳本
 # =============================================================================
 # 使用方式：
-#   ./deploy_pipeline.sh [env]              部署全部 14 個 Jobs (FT 4 + LT 3 + GT 7)
+#   ./deploy_pipeline.sh [env]              部署全部 15 個 Jobs (FT 4 + LT 3 + GT 8)
 #   ./deploy_pipeline.sh [env] ft           僅部署 Fast Track (4 個)
 #   ./deploy_pipeline.sh [env] lt           僅部署 Literary Track (3 個)
-#   ./deploy_pipeline.sh [env] gt           僅部署 Gutenberg Track (7 個)
+#   ./deploy_pipeline.sh [env] gt           僅部署 Gutenberg Track (8 個)
 #   ./deploy_pipeline.sh [env] ots-ft-nmt   部署單一 Job (by name/key)
 #   ./deploy_pipeline.sh [env] nmt          部署單一 Job (by short key)
 #   ./deploy_pipeline.sh [env] --build-only ft  只建 Image 不部署 (加速)
@@ -16,7 +16,7 @@
 # 軌道總覽：
 #   ft_* (4 個 Jobs)   — Fast Track 標準文件翻譯
 #   lt_* (3 個 Jobs)   — Literary Track 長文人工校對翻譯
-#   gt_* (7 個 Jobs)   — Gutenberg Track 自動翻譯 Project Gutenberg 書籍
+#   gt_* (8 個 Jobs)   — Gutenberg Track 自動翻譯 Project Gutenberg 書籍
 #                         gt_fetcher          (EPUB/文字下載，產出 full_text.txt)
 #                         gt_chapter_splitter (LLM 偵測章節，產出 chapters.json + segments.json)
 #                         gt_extract_terms    (術語提取)
@@ -24,6 +24,7 @@
 #                         gt_simplify         (中→青少年版，chapter-based)
 #                         gt_tailo            (青少年版→Hanzi+台羅拼音，segment-based)
 #                         gt_deliver          (產出 7 個交付檔：3 TXT + 4 HTML)
+#                         gt_video_prep       (簡化版→影片分鏡腳本，產出 video_materials.json)
 #
 # 部署速度：
 #   - 所有選定的 Job Image 在單一 Cloud Build 中平行建置 (e2-standard-16)
@@ -116,6 +117,7 @@ JOBS=(
   "gt_simplify:ots-gt-simplify-${ENV}:gt_simplify:large"
   "gt_tailo:ots-gt-tailo-${ENV}:gt_tailo:large"
   "gt_deliver:ots-gt-deliver-${ENV}:gt_deliver:standard"
+  "gt_video_prep:ots-gt-video-prep-${ENV}:gt_video_prep:large"
 )
 
 # ── Filter to selected jobs ─────────────────────────────────────────────────
@@ -319,7 +321,7 @@ if [[ "$BUILD_ONLY" == "false" ]]; then
       - '--network=default'
       - '--subnet=default'
       - '--vpc-egress=private-ranges-only'
-      - '--set-secrets=DB_URL=ots-db-url-${ENV}:latest,GOOGLE_AI_API_KEY=ots-google-ai-key-${ENV}:latest'
+      - '--set-secrets=DB_URL=ots-db-url-${ENV}:latest,GOOGLE_AI_API_KEY=ots-google-ai-key-${ENV}:latest,BRONCI_API_USERNAME=ots-bronci-username-${ENV}:latest,BRONCI_API_PASSWORD=ots-bronci-password-${ENV}:latest,BRONCI_API_BASE_URL=ots-bronci-base-url-${ENV}:latest,HF_API_TOKEN=ots-hf-api-token-${ENV}:latest,REPLICATE_API_TOKEN=ots-replicate-api-token-${ENV}:latest'
       - '--set-env-vars=\${_COMMON_ENV}'
       - '--max-retries=5'
       - '--task-timeout=${TIMEOUT}'
