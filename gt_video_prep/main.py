@@ -27,7 +27,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from shared.config import cfg
 from shared.db import update_job_status
 from shared.gemini import call_gemini
+from shared.notify import notify_stage
 from shared.storage import read_temp_json, write_temp_json
+from shared.tai_lo_translator import translate_to_tai_lo
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -77,9 +79,9 @@ def _validate_scene_data(data: dict) -> Optional[dict]:
         return None
     return {
         "scene_index": int(data["scene_index"]),
-        "narration_text": str(data["narration_text"]).strip(),
         "visual_prompt": str(data["visual_prompt"]).strip(),
         "duration_est": str(data.get("duration_est", "15s")),
+        "narration_text": str(data["narration_text"]).strip(),
     }
 
 
@@ -185,10 +187,35 @@ def run():
 
             logger.info(f"Breaking down chapter {ch_index}: {ch_title}...")
             scenes = _build_scenes(ch_text, ch_title, ch_index, character_sheet)
+
+            # Step 2a: Translate to Tâi-lô
+            logger.info(f"  Translating {len(scenes)} scenes to Tâi-lô...")
+            for s in scenes:
+                zh_text = s.get("narration_text", "")
+                if zh_text:
+                    try:
+                        s["narration_tai_lo"] = translate_to_tai_lo(zh_text)
+                    except Exception as e:
+                        logger.warning(f"  Tai-lo translation failed for scene {s.get('scene_index')}: {e}")
+                        s["narration_tai_lo"] = zh_text
+                else:
+                    s["narration_tai_lo"] = ""
+
+            # Convert to dual-track structure
+            dual_track_scenes = []
+            for s in scenes:
+                zh_text = s.pop("narration_text", "")
+                tai_lo_text = s.pop("narration_tai_lo", "")
+                s["tracks"] = {
+                    "zh": {"narration_text": zh_text},
+                    "tai-lo": {"narration_text": tai_lo_text},
+                }
+                dual_track_scenes.append(s)
+
             chapters_out.append({
                 "chapter_index": ch_index,
                 "title": ch_title,
-                "scenes": scenes,
+                "scenes": dual_track_scenes,
             })
             total_scenes += len(scenes)
             logger.info(f"  → {len(scenes)} scenes")
@@ -200,7 +227,8 @@ def run():
             },
             "chapters": chapters_out,
             "settings": {
-                "voice_id": "cmn-TW-vs2-F04",
+                "voice_id_zh": "cmn-TW-vs2-F04",
+                "voice_id_tai-lo": "nan-TW-vs2-F01",
                 "speaking_rate": 1.0,
             },
         }
@@ -211,6 +239,7 @@ def run():
             "num_chapters": len(chapters_out),
             "num_scenes": total_scenes,
         })
+        notify_stage("gt_video_prep")
         logger.info(
             f"=== gt_video_prep DONE — {len(chapters_out)} chapters, "
             f"{total_scenes} scenes ==="

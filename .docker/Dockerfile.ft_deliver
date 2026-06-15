@@ -7,5 +7,5 @@ COPY shared/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY shared/ ./shared/
 COPY ots-common/ ./ots-common/
-COPY gt_deliver/ ./job/
+COPY ft_deliver/ ./job/
 CMD ["python", "job/main.py"]

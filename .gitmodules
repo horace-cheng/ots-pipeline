@@ -1,0 +1,3 @@
+[submodule "ots-common"]
+	path = ots-common
+	url = https://github.com/horace-cheng/ots-common.git

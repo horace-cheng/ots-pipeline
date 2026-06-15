@@ -17,6 +17,7 @@ GT_STAGE_LABELS = {
     "gt_simplify": "簡化（Simplify）",
     "gt_tailo": "台語化（Tâi-lô）",
     "gt_deliver": "遞送完成（Deliver）",
+    "gt_video_prep": "影片分鏡腳本（Storyboard）",
 }
 
 

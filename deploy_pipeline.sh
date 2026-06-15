@@ -211,10 +211,12 @@ for job_spec in "${SELECTED[@]}"; do
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH="/app/ots-common:\$PYTHONPATH"
 WORKDIR /app
 COPY shared/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY shared/ ./shared/
+COPY ots-common/ ./ots-common/
 COPY ${job_dir}/ ./job/
 ${EXTRA_COPY}
 CMD ["python", "job/main.py"]
