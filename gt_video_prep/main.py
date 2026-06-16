@@ -230,6 +230,8 @@ def run():
                 "voice_id_zh": "cmn-TW-vs2-F04",
                 "voice_id_tai-lo": "nan-TW-vs2-F01",
                 "speaking_rate": 1.0,
+                "short_pause_duration": 150,
+                "long_pause_duration": 450,
             },
         }
 
