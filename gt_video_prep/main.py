@@ -238,6 +238,7 @@ def run():
                 "speaking_rate": 1.0,
                 "short_pause_duration": 150,
                 "long_pause_duration": 450,
+                "visual_style": "photorealistic",
             },
         }
 
