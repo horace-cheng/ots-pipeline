@@ -8,4 +8,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY shared/ ./shared/
 COPY ots-common/ ./ots-common/
 COPY gt_video_prep/ ./job/
+
 CMD ["python", "job/main.py"]

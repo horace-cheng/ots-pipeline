@@ -24,6 +24,7 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from ots_common.video.ltx_prompt_rules import LTX_VISUAL_PROMPT_RULES
 from shared.config import cfg
 from shared.db import update_job_status
 from shared.gemini import call_gemini
@@ -50,14 +51,16 @@ Book text:
 __BOOK_TEXT_PLACEHOLDER__
 """
 
-SCENE_BREAKDOWN_PROMPT = """You are a professional book-to-video storyboard artist. Given a chapter of a simplified Chinese book and a Global Character Sheet, break the chapter into distinct video scenes.
+SCENE_BREAKDOWN_PROMPT = """You are a professional book-to-video director and storyboard artist. Given a chapter of a simplified Chinese book and a Global Character Sheet, break the chapter into distinct video scenes.
 
-Each scene should be a single camera shot lasting approximately 10-20 seconds when narrated. Split the text at natural story beats (scene changes, new actions, different locations).
+Each scene should be a single continuous camera shot lasting approximately 10-20 seconds when narrated. Split the text at natural story beats (scene changes, new actions, different locations).
+
+__LTX_VISUAL_PROMPT_RULES__
 
 For each scene, output a JSON object with:
 1. "scene_index": sequential number starting from 0
 2. "narration_text": the text to be spoken (in Traditional Chinese, 繁體中文), adapted from the simplified text for natural spoken narration. Keep it concise — aim for 30-80 words per scene.
-3. "visual_prompt": a detailed English prompt for an AI image generator describing the scene. MUST reference the Global Character Sheet to ensure visual consistency. Include composition, camera angle, lighting, mood.
+3. "visual_prompt": a detailed English video-generation prompt optimized for LTX built using the rules above.
 4. "duration_est": estimated duration in seconds as a string (e.g., "15s")
 
 Output a JSON object with key "scenes" containing the array of scenes. No commentary.
@@ -101,11 +104,12 @@ def _extract_first_json(text: str) -> str:
 def _build_character_sheet(full_text: str) -> dict:
     """Call Gemini to generate the Global Character Sheet."""
     prompt = CHARACTER_SHEET_PROMPT.replace("__BOOK_TEXT_PLACEHOLDER__", full_text)
-    raw, _usage = call_gemini(
+    raw, usage = call_gemini(
         prompt,
-        max_tokens=4096,
+        max_tokens=16384,
         response_mime_type="application/json",
     )
+    logger.info(f"Character sheet Gemini usage: {usage}")
     cleaned = _extract_first_json(raw)
     try:
         data = json.loads(cleaned)
@@ -125,13 +129,15 @@ def _build_scenes(chapter_text: str, chapter_title: str,
     """Call Gemini to break a chapter into scenes."""
     sheet_text = json.dumps(character_sheet, ensure_ascii=False, indent=2)
     prompt = SCENE_BREAKDOWN_PROMPT \
+        .replace("__LTX_VISUAL_PROMPT_RULES__", LTX_VISUAL_PROMPT_RULES) \
         .replace("__CHARACTER_SHEET__", sheet_text) \
         .replace("__CHAPTER_TEXT_PLACEHOLDER__", chapter_text)
-    raw, _usage = call_gemini(
+    raw, usage = call_gemini(
         prompt,
-        max_tokens=8192,
+        max_tokens=16384,
         response_mime_type="application/json",
     )
+    logger.info(f"Chapter {chapter_index} scene breakdown Gemini usage: {usage}")
     try:
         data = json.loads(raw)
         scenes_raw = data.get("scenes", [])
@@ -228,7 +234,7 @@ def run():
             "chapters": chapters_out,
             "settings": {
                 "voice_id_zh": "cmn-TW-vs2-F04",
-                "voice_id_tai-lo": "nan-TW-vs2-F01",
+                "voice_id_tai_lo": "cmn-TW-vs2-F04",
                 "speaking_rate": 1.0,
                 "short_pause_duration": 150,
                 "long_pause_duration": 450,
