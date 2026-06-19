@@ -55,6 +55,8 @@ SCENE_BREAKDOWN_PROMPT = """You are a professional book-to-video director and st
 
 Each scene should be a single continuous camera shot lasting approximately 10-20 seconds when narrated. Split the text at natural story beats (scene changes, new actions, different locations).
 
+Visual style: __STYLE_DESC__.
+
 __LTX_VISUAL_PROMPT_RULES__
 
 For each scene, output a JSON object with:
@@ -71,6 +73,24 @@ __CHARACTER_SHEET__
 Chapter text:
 __CHAPTER_TEXT_PLACEHOLDER__
 """
+
+
+_STYLE_PROMPTS = {
+    "photorealistic": None,
+    "cinematic": "Cinematic, film grain, dramatic lighting, anamorphic, deep contrast, rich shadows",
+    "anime": "Anime style, cel-shaded, bold lines, vibrant flat colors, Studio Ghibli inspired, painterly backgrounds",
+    "3d_render": "3D render, Pixar style, bright colors, soft global illumination, subsurface scattering, playful",
+    "comic": "Comic book style, halftone dots, bold outlines, Ben-Day dots, pop art colors, speech bubble aesthetic",
+    "watercolor": "Watercolor painting, soft washes, paper texture, wet-on-wet, delicate translucent layers, hand-painted",
+    "oil_painting": "Oil painting, impasto, visible brush strokes, canvas texture, Van Gogh or Rembrandt palette, thick paint",
+}
+
+
+def _get_style_prompt(visual_style: str) -> str:
+    desc = _STYLE_PROMPTS.get(visual_style)
+    if desc is None:
+        return "Photorealistic, natural lighting, true-to-life, sharp details"
+    return desc
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -125,10 +145,12 @@ def _build_character_sheet(full_text: str) -> dict:
 
 
 def _build_scenes(chapter_text: str, chapter_title: str,
-                   chapter_index: int, character_sheet: dict) -> List[dict]:
+                   chapter_index: int, character_sheet: dict,
+                   visual_style: str = "photorealistic") -> List[dict]:
     """Call Gemini to break a chapter into scenes."""
     sheet_text = json.dumps(character_sheet, ensure_ascii=False, indent=2)
     prompt = SCENE_BREAKDOWN_PROMPT \
+        .replace("__STYLE_DESC__", _get_style_prompt(visual_style)) \
         .replace("__LTX_VISUAL_PROMPT_RULES__", LTX_VISUAL_PROMPT_RULES) \
         .replace("__CHARACTER_SHEET__", sheet_text) \
         .replace("__CHAPTER_TEXT_PLACEHOLDER__", chapter_text)
@@ -192,7 +214,8 @@ def run():
                 continue
 
             logger.info(f"Breaking down chapter {ch_index}: {ch_title}...")
-            scenes = _build_scenes(ch_text, ch_title, ch_index, character_sheet)
+            visual_style = "photorealistic"
+            scenes = _build_scenes(ch_text, ch_title, ch_index, character_sheet, visual_style)
 
             # Step 2a: Translate to Tâi-lô
             logger.info(f"  Translating {len(scenes)} scenes to Tâi-lô...")
