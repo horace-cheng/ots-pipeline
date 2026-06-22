@@ -19,6 +19,7 @@ Required env vars:
 import json
 import logging
 import sys
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -101,6 +102,7 @@ def _validate_scene_data(data: dict) -> Optional[dict]:
     if not all(k in data for k in required):
         return None
     return {
+        "scene_id": str(uuid.uuid4()),
         "scene_index": int(data["scene_index"]),
         "visual_prompt": str(data["visual_prompt"]).strip(),
         "duration_est": str(data.get("duration_est", "15s")),
