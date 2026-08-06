@@ -225,7 +225,7 @@ Rules:
 5. Literary devices (metaphor, alliteration, rhythm) should be preserved where possible
 6. Begin IMMEDIATELY with the translation of the first segment. Output ONLY the {target_lang} translations, one per segment, each followed by <<<TRANSLATION_END>>> on its own line. Do NOT add any preamble, reasoning, or commentary before the first translation. Do NOT echo or repeat the === SEGMENT N === markers. Do NOT write "Segment N:" labels or any other numbers before translations. Do NOT add extra text before, after, or between segments.
 7. IMPORTANT: The delimiter <<<TRANSLATION_END>>> must appear on its own line with NO surrounding text. Do NOT embed it inside a translation. Do NOT add extra delimiters or misspell them.
-8. Reference materials (glossaries, style guides, background documents) are attached for translation context — use them to inform terminology and style
+8. CRITICAL — The publisher's reference files (character name table, glossary, style guide) are attached to this request via file-search. Consult them BEFORE translating and use EXACTLY the romanizations and terms they provide for character names, place names, and glossary terms (e.g. 阿章 = A-tsiong). Never substitute a different romanization.
 9. Do NOT translate or modify footnote/annotation/remark numbers (e.g., [1], ①, (a), Note 1) — keep them exactly as in the source
 10. A file containing previously translated segments from this document is attached. Reference it to keep terminology, style, and tone consistent across the entire translation.
 11. If a segment consists entirely of non-letter characters (e.g., asterisks, dashes, symbols, ornamental marks, spaces) with no alphabetic or CJK text content, output it exactly as-is without any modification or translation.
