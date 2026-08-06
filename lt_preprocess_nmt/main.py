@@ -36,7 +36,10 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("lt_preprocess_nmt")
 
 
-# ── 段落分割（沿用 FT 邏輯）────────────────────────────────────────────────────
+# ── 段落分割 ────────────────────────────────────────────────────────────────
+_HEADING_RE = re.compile(r"^(第[一二三四五六七八九十百0-9]+章|〈[^〉]{1,20}〉)$")
+
+
 def split_paragraphs(text: str) -> list[str]:
     paragraphs = [p.strip() for p in re.split(r"\n{2,}", text)]
     paragraphs = [p for p in paragraphs if p]
@@ -46,11 +49,20 @@ def split_paragraphs(text: str) -> list[str]:
         paragraphs = [p.strip() for p in raw_splits if p.strip()]
 
     merged = []
-    for para in paragraphs:
-        if merged and len(para) < 15:
-            merged[-1] += para
-        else:
+    pending = []
+    for i, para in enumerate(paragraphs):
+        if i == 0:
             merged.append(para)
+            continue
+        if _HEADING_RE.match(para) or len(para) >= 15:
+            if pending:
+                merged.append("\n".join(pending))
+                pending = []
+            merged.append(para)
+        else:
+            pending.append(para)
+    if pending:
+        merged.append("\n".join(pending))
 
     # LT 使用較大的 segment 以保留上下文（4000 chars vs FT 的 500）
     MAX_SEGMENT_CHARS = 4000
@@ -212,7 +224,7 @@ Rules:
 3. Preserve proper nouns, place names, and cultural terms with appropriate romanization
 4. Maintain the original tone (formal, colloquial, poetic, etc.)
 5. Literary devices (metaphor, alliteration, rhythm) should be preserved where possible
-6. Output ONLY the translations with <<<TRANSLATION_END>>> markers — no explanations, no preamble, no segment numbers. Do NOT add extra text before, after, or between segments.
+6. Begin IMMEDIATELY with the translation of the first segment. Output ONLY the {target_lang} translations, one per segment, each followed by <<<TRANSLATION_END>>> on its own line. Do NOT add any preamble, reasoning, or commentary before the first translation. Do NOT echo or repeat the === SEGMENT N === markers. Do NOT write "Segment N:" labels or any other numbers before translations. Do NOT add extra text before, after, or between segments.
 7. IMPORTANT: The delimiter <<<TRANSLATION_END>>> must appear on its own line with NO surrounding text. Do NOT embed it inside a translation. Do NOT add extra delimiters or misspell them.
 8. Reference materials (glossaries, style guides, background documents) are attached for translation context — use them to inform terminology and style
 9. Do NOT translate or modify footnote/annotation/remark numbers (e.g., [1], ①, (a), Note 1) — keep them exactly as in the source
@@ -476,25 +488,17 @@ def translate_batch(
                     logger.warning(f"Batch {batch_id}: TM upload failed (non-fatal): {e}")
                     tm_file_obj = None
 
-            for attempt in range(4):
-                if not pending_indices:
-                    success = True
-                    break
+            # ── Helpers: one-shot translate + recursive split-on-block ──
+            def _translate_once(indices: list[int]) -> dict[int, str]:
+                """Translate ``indices`` in a single call, return {idx: text}.
 
-            if attempt > 0:
-                logger.info(
-                    f"Retry {attempt}/3 for batch {batch_id}: "
-                    f"{len(pending_indices)} segments remain"
-                )
-                time.sleep(5 * attempt)
-
-            current_slice = [batch_segs[i] for i in pending_indices]
-
-            try:
-                # ── Build prompt ──
+                Returns {} when the model returns an empty/blocked response
+                (e.g. PROHIBITED_CONTENT) or echoes markers — callers then split
+                the slice so offending segment pairs never share one prompt.
+                """
                 parts = []
-                for j, seg in enumerate(current_slice):
-                    parts.append(f"=== SEGMENT {j+1} ===\n{seg['text']}")
+                for j, seg in enumerate(indices):
+                    parts.append(f"=== SEGMENT {j+1} ===\n{batch_segs[seg]['text']}")
                 combined = "\n\n".join(parts)
 
                 prompt = prompt_template.format(
@@ -502,7 +506,7 @@ def translate_batch(
                     source_lang_label = LANG_LABELS.get(source_lang, source_lang),
                     target_lang       = LANG_LABELS.get(target_lang, target_lang),
                     hanzi_instruction = hanzi_instr,
-                    num_segments      = len(current_slice),
+                    num_segments      = len(indices),
                 )
 
                 response = translate(
@@ -511,8 +515,15 @@ def translate_batch(
                     extra_files=[tm_file_obj] if tm_file_obj else None,
                 )
 
+                # Empty/None response → the model blocked the prompt
+                if not response or not response.strip():
+                    logger.warning(
+                        f"Batch {batch_id}: empty/blocked response for "
+                        f"{len(indices)} segments — splitting"
+                    )
+                    return {}
+
                 # ── Parse delimiter-separated response ──
-                # Match marker variants on their own line only (never inside a segment)
                 parsed = re.split(
                     r'(?:\n|^)\s*<<<TRAN\w*_?E?N?D?>>>>?\s*(?:\n|$)',
                     response,
@@ -528,49 +539,114 @@ def translate_batch(
                 for j in range(len(parsed)):
                     parsed[j] = _marker_re.sub('', parsed[j]).strip()
 
-                newly_done: list[int] = []
+                # Strip leading "Segment N:" labels (model violates rule 6)
+                _label_re = re.compile(r'^\s*Segment\s+\d+\s*[:.)]?\s*', re.IGNORECASE)
+                for j in range(len(parsed)):
+                    parsed[j] = _label_re.sub('', parsed[j], count=1).strip()
+
+                # Echoed === SEGMENT N === markers / preamble → treat as failure
+                _echo_re = re.compile(r'=== SEGMENT\s+\d+\s*===', re.IGNORECASE)
+                if parsed and _echo_re.search(parsed[0]):
+                    logger.warning(
+                        f"Batch {batch_id}: response starts with echoed SEGMENT "
+                        f"markers / preamble — splitting"
+                    )
+                    return {}
+
+                out: dict[int, str] = {}
                 for j, p in enumerate(parsed):
-                    if j < len(pending_indices) and p:
-                        original_idx = pending_indices[j]
-                        result_parts[original_idx] = p
-                        newly_done.append(original_idx)
+                    if j < len(indices) and p:
+                        out[indices[j]] = p
 
                 # ── tai-lo Hanzi check ──
                 if target_lang == "tai-lo":
-                    for seg_idx in list(newly_done):
-                        if not _has_sufficient_hanzi(result_parts[seg_idx]):
+                    for seg_idx in list(out):
+                        if not _has_sufficient_hanzi(out[seg_idx]):
                             logger.warning(
                                 f"Segment {start + seg_idx} has insufficient Han "
-                                f"characters (tai-lo target), retrying"
+                                f"characters (tai-lo target), splitting"
                             )
-                            result_parts[seg_idx] = ""
-                            newly_done.remove(seg_idx)
+                            del out[seg_idx]
 
-                pending_indices = [i for i in pending_indices if i not in newly_done]
+                return out
 
-                non_empty = sum(1 for p in result_parts if p)
-                if pending_indices:
-                    if attempt < 3:
-                        logger.info(
-                            f"Batch {batch_id}: attempt {attempt+1}/4 — "
-                            f"{non_empty}/{count} segments, "
-                            f"{len(pending_indices)} pending"
-                        )
-                    else:
+            def _translate_with_split(indices: list[int]) -> dict[int, str]:
+                """Translate ``indices``; split into halves when the combined
+                prompt is blocked (empty response).  Single segments that still
+                fail are retried once with a minimal prompt, then returned as
+                gaps."""
+                result = _translate_once(indices)
+                if result:
+                    return result
+                if len(indices) == 1:
+                    # Full-template prompt blocked (PROHIBITED_CONTENT false
+                    # positive); a minimal prompt usually passes the filter.
+                    seg = indices[0]
+                    minimal = (
+                        f"Translate the following "
+                        f"{LANG_LABELS.get(source_lang, source_lang)} text into "
+                        f"{LANG_LABELS.get(target_lang, target_lang)}. "
+                        f"{hanzi_instr}\n\n{batch_segs[seg]['text']}"
+                    )
+                    try:
+                        response = translate(prompt=minimal, max_tokens=16384)
+                    except Exception as e:
                         logger.warning(
-                            f"Batch {batch_id}: final attempt — "
-                            f"{non_empty}/{count} segments, proceeding "
-                            f"with {len(pending_indices)} gaps"
+                            f"Segment {start + seg}: minimal-prompt fallback "
+                            f"failed: {e}"
                         )
-                        success = True
-                else:
-                    success = True
+                        return {}
+                    if response and response.strip():
+                        return {seg: response.strip()}
+                    return {}
+                mid = len(indices) // 2
+                for half in (indices[:mid], indices[mid:]):
+                    result.update(_translate_with_split(half))
+                return result
 
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1}/4 for batch {batch_id} failed: {e}")
-                if attempt < 3:
-                    continue
-                logger.error(f"Batch {batch_id} permanently failed after 4 attempts")
+            for attempt in range(4):
+                if not pending_indices:
+                    success = True
+                    break
+
+                if attempt > 0:
+                    logger.info(
+                        f"Retry {attempt}/3 for batch {batch_id}: "
+                        f"{len(pending_indices)} segments remain"
+                    )
+                    time.sleep(5 * attempt)
+
+                try:
+                    slice_results = _translate_with_split(list(pending_indices))
+                    for idx, txt in slice_results.items():
+                        result_parts[idx] = txt
+
+                    newly_done = set(slice_results)
+                    pending_indices = [i for i in pending_indices if i not in newly_done]
+
+                    non_empty = sum(1 for p in result_parts if p)
+                    if pending_indices:
+                        if attempt < 3:
+                            logger.info(
+                                f"Batch {batch_id}: attempt {attempt+1}/4 — "
+                                f"{non_empty}/{count} segments, "
+                                f"{len(pending_indices)} pending"
+                            )
+                        else:
+                            logger.warning(
+                                f"Batch {batch_id}: final attempt — "
+                                f"{non_empty}/{count} segments, proceeding "
+                                f"with {len(pending_indices)} gaps"
+                            )
+                            success = True
+                    else:
+                        success = True
+
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt + 1}/4 for batch {batch_id} failed: {e}")
+                    if attempt < 3:
+                        continue
+                    logger.error(f"Batch {batch_id} permanently failed after 4 attempts")
 
         # ── Save checkpoint (or skip if permanently failed) ──
         if success and result_parts is not None:

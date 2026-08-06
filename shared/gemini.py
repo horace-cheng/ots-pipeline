@@ -142,10 +142,15 @@ def call_gemini(
             resp = m.generate_content(contents, generation_config=generation_config)
             usage = getattr(resp, 'usage_metadata', None)
             _usage = {
-                "prompt_tokens":     usage.prompt_token_count     if usage else 0,
-                "candidates_tokens": usage.candidates_token_count if usage else 0,
-                "total_tokens":      usage.total_token_count      if usage else 0,
+                "prompt_tokens":     (usage.prompt_token_count or 0)     if usage else 0,
+                "candidates_tokens": (usage.candidates_token_count or 0) if usage else 0,
+                "total_tokens":      (usage.total_token_count or 0)      if usage else 0,
             } if usage else {"prompt_tokens": 0, "candidates_tokens": 0, "total_tokens": 0}
+            if not getattr(resp, "candidates", None):
+                logger.warning(
+                    "Gemini returned no candidates (blocked prompt) — returning None"
+                )
+                return None, _usage
             return resp.text, _usage
         except Exception as e:
             err_str = str(e)
@@ -282,10 +287,15 @@ def call_gemini_with_file_search(
             )
             usage = getattr(response, 'usage_metadata', None)
             _usage = {
-                "prompt_tokens":     usage.prompt_token_count     if usage else 0,
-                "candidates_tokens": usage.candidates_token_count if usage else 0,
-                "total_tokens":      usage.total_token_count      if usage else 0,
+                "prompt_tokens":     (usage.prompt_token_count or 0)     if usage else 0,
+                "candidates_tokens": (usage.candidates_token_count or 0) if usage else 0,
+                "total_tokens":      (usage.total_token_count or 0)      if usage else 0,
             } if usage else {"prompt_tokens": 0, "candidates_tokens": 0, "total_tokens": 0}
+            if not getattr(response, "candidates", None):
+                logger.warning(
+                    "Gemini w/FileSearch returned no candidates (blocked prompt) — returning None"
+                )
+                return None, _usage
             return response.text, _usage
         except Exception as e:
             err_str = str(e)
