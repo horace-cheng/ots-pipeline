@@ -8,4 +8,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY shared/ ./shared/
 COPY ots-common/ ./ots-common/
 COPY gt_fetcher/ ./job/
+
 CMD ["python", "job/main.py"]

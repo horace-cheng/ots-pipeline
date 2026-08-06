@@ -27,8 +27,7 @@ from shared.storage import (
 )
 from shared.versions import save_translation_version
 from shared.gemini  import (
-    translate, create_file_search_store, upload_to_file_search_store,
-    delete_file_search_store, upload_file_to_gemini, delete_gemini_file,
+    translate, upload_file_to_gemini, delete_gemini_file,
 )
 
 logging.basicConfig(level=logging.INFO,
@@ -686,126 +685,95 @@ def translate_batch(
 
 
 # ── 讀取支援材料 ───────────────────────────────────────────────────────────────
-GEMINI_SUPPORTED_MIMES = {
-    "application/pdf", "text/plain", "text/html", "text/csv", "text/xml",
-    "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif",
-}
-
-DOCX_MIMES = {
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-}
-
-
-def _convert_docx_to_html(raw: bytes) -> str | None:
-    """Convert a .docx file to HTML using mammoth."""
-    try:
-        import mammoth
-        result = mammoth.convert_to_html(io.BytesIO(raw))
-        html = result.value
-        if not html.strip():
-            logger.warning("mammoth returned empty HTML, falling back to text extraction")
-            return None
-        return f"<!DOCTYPE html><html><meta charset=\"utf-8\"><body>{html}</body></html>"
-    except Exception as e:
-        logger.warning(f"mammoth conversion failed: {e}")
-        return None
-
-
-def _strip_html(html_text: str) -> str:
-    """Strip HTML tags, returning plain text."""
-    from html.parser import HTMLParser
-    class _Stripper(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self._text = []
-        def handle_data(self, d):
-            if d.strip():
-                self._text.append(d)
-    stripper = _Stripper()
-    stripper.feed(html_text)
-    return "\n".join(stripper._text)
 
 
 def load_support_context(order_id: str) -> str | None:
-    """Upload support materials to a Gemini File Search Store and return its name.
+    """Ensure the order's support files are indexed in a Gemini File Search Store.
 
-    File Search (RAG) replaces raw File API attachment — files are
-    auto-chunked + indexed, and Gemini retrieves relevant chunks per request.
-    This means every translation batch gets reference context without
-    consuming the full file token budget.
+    Files are uploaded byte-for-byte (docx/pdf/xlsx/html/images are parsed
+    natively by Gemini Embedding 2 — no manual extraction). The store is shared
+    with the API retranslate and reused across runs; it is no longer deleted at
+    the end of preprocessing.
 
     Returns the store name (str) or None if no support files found.
     """
     try:
         from shared.storage import get_client
         from shared.config import cfg as gcfg
+        from shared.gemini import get_new_genai_client
+        from ots_common.rag.file_search import (
+            get_or_create_file_search_store,
+            upload_raw_file_to_store,
+        )
 
-        client = get_client()
-        bucket = client.bucket(gcfg.BUCKET_UPLOADS)
+        storage_client = get_client()
+        bucket = storage_client.bucket(gcfg.BUCKET_UPLOADS)
         prefix = f"orders/{order_id}/support/"
 
         blobs = list(bucket.list_blobs(prefix=prefix))
         if not blobs:
             return None
 
-        store_name = create_file_search_store(order_id)
+        genai_client = get_new_genai_client()
+        store_name = get_or_create_file_search_store(
+            genai_client, order_id, gcfg.ENV
+        )
+
+        indexed = _load_indexed_files(order_id)
         uploaded_count = 0
 
         for blob in blobs:
             if blob.name.endswith("/"):
                 continue
+            filename = blob.name.split("/")[-1]
             try:
                 raw = blob.download_as_bytes()
-                filename = blob.name.split("/")[-1]
-                mime_type = blob.content_type or "text/plain"
-
-                if mime_type in GEMINI_SUPPORTED_MIMES:
-                    if mime_type == "text/html":
-                        text = _strip_html(raw.decode("utf-8-sig", errors="replace"))
-                        txt_name = Path(filename).stem + ".txt"
-                        upload_to_file_search_store(
-                            store_name, data=text.encode("utf-8"),
-                            display_name=txt_name, mime_type="text/plain",
-                        )
-                    else:
-                        upload_to_file_search_store(
-                            store_name, data=raw,
-                            display_name=filename, mime_type=mime_type,
-                        )
-                elif mime_type in DOCX_MIMES:
-                    html = _convert_docx_to_html(raw)
-                    if html:
-                        text = _strip_html(html)
-                    else:
-                        text = normalize_text(raw)
-                    txt_name = Path(filename).stem + ".txt"
-                    upload_to_file_search_store(
-                        store_name, data=text.encode("utf-8"),
-                        display_name=txt_name, mime_type="text/plain",
-                    )
-                else:
-                    text = normalize_text(raw)
-                    txt_name = Path(filename).stem + ".txt"
-                    upload_to_file_search_store(
-                        store_name, data=text.encode("utf-8"),
-                        display_name=txt_name, mime_type="text/plain",
-                    )
-
+                md5 = getattr(blob, "md5_hash", "") or ""
+                if any(f.get("name") == filename and f.get("md5") == md5 for f in indexed):
+                    logger.info(f"Support file already indexed (skipping): {filename}")
+                    continue
+                upload_raw_file_to_store(
+                    genai_client, store_name, raw, filename,
+                    mime_type=blob.content_type or "text/plain",
+                )
+                indexed.append({"name": filename, "md5": md5})
                 uploaded_count += 1
                 logger.info(f"Uploaded support file to File Search Store: {filename}")
             except Exception as e:
                 logger.warning(f"Failed to upload support file {blob.name} to File Search Store: {e}")
 
+        _save_indexed_files(order_id, indexed)
+
         if uploaded_count == 0:
-            logger.info("No support files were uploaded; deleting empty store")
-            delete_file_search_store(store_name)
-            return None
+            logger.info("No support files were uploaded; reusing existing indexed store")
+            return store_name
 
         logger.info(f"File Search Store ready: {uploaded_count} file(s) indexed")
         return store_name
     except Exception as e:
         logger.warning(f"Support context loading failed (non-critical): {e}")
         return None
+
+
+def _load_indexed_files(order_id: str) -> list[dict]:
+    """Read the per-order list of already-indexed support files (temp GCS JSON)."""
+    try:
+        from shared.storage import read_temp_json
+        data = read_temp_json("file_search_indexed.json")
+        if isinstance(data, list):
+            return [f for f in data if isinstance(f, dict)]
+    except Exception as e:
+        logger.warning(f"Indexed-files read failed (non-critical): {e}")
+    return []
+
+
+def _save_indexed_files(order_id: str, indexed: list[dict]) -> None:
+    """Persist the per-order list of already-indexed support files."""
+    try:
+        from shared.storage import write_temp_json
+        write_temp_json("file_search_indexed.json", indexed)
+    except Exception as e:
+        logger.warning(f"Indexed-files save failed (non-critical): {e}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -917,9 +885,8 @@ def run():
             write_qa_flags(flags, job_type="lt_preprocess_nmt")
             logger.warning(f"Marked {len(flags)} empty segments as must_fix")
 
-        # ── Phase 5: Cleanup File Search Store ────────────────────────────
-        if store_name:
-            delete_file_search_store(store_name)
+        # NOTE: the File Search Store is intentionally kept after preprocessing
+        # so the API retranslate can reuse the same per-order index.
 
         # ── Phase 6: Write output artifacts ───────────────────────────────
         translations_out = [

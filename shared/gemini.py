@@ -56,6 +56,11 @@ def _get_new_genai_client():
     return _new_genai_client
 
 
+# Public alias so callers (e.g. lt_preprocess_nmt) can fetch the client for the
+# ots-common File Search helpers without reaching into a private name.
+get_new_genai_client = _get_new_genai_client
+
+
 def upload_file_to_gemini(data: bytes, display_name: str, mime_type: str):
     """Upload a file to Gemini File API and wait for processing. Returns the File object."""
     genai = _get_genai_client()
