@@ -116,36 +116,34 @@ def log_token_usage(job_type: str, model: str,
                     prompt_tokens: int, candidates_tokens: int,
                     total_tokens: int):
     """Log a single Gemini API call's token usage to the token_usage table.
-    
-    Cost is calculated from the model pricing in PipelineConfig.
-    The unit rates used are also stored for transparent cost display.
+
+    Cost is calculated from the shared model pricing in ots_common; the unit
+    rates used are stored for transparent cost display.
     """
-    rate = cfg.MODEL_PRICING.get(model, {"input": 0, "output": 0})
-    input_rate  = rate["input"]
-    output_rate = rate["output"]
-    cost_usd = (prompt_tokens / 1_000_000 * input_rate) + \
-               (candidates_tokens / 1_000_000 * output_rate)
-    with get_db() as db:
-        db.execute(text("""
-            INSERT INTO token_usage
-                (order_id, job_type, model, prompt_tokens, candidates_tokens,
-                 total_tokens, cost_usd, input_rate, output_rate)
-            VALUES
-                (:order_id, :job_type, :model, :prompt_tokens, :candidates_tokens,
-                 :total_tokens, :cost_usd, :input_rate, :output_rate)
-        """), {
-            "order_id":          cfg.ORDER_ID,
-            "job_type":          job_type,
-            "model":             model,
+    from ots_common.usage.token_usage import log_token_usage as _log
+
+    def _execute(sql: str, params: dict):
+        with get_db() as db:
+            db.execute(text(sql), params)
+
+    record = _log(
+        order_id=cfg.ORDER_ID,
+        job_type=job_type,
+        model=model,
+        usage={
             "prompt_tokens":     prompt_tokens,
             "candidates_tokens": candidates_tokens,
             "total_tokens":      total_tokens,
-            "cost_usd":          round(cost_usd, 6),
-            "input_rate":        input_rate,
-            "output_rate":       output_rate,
-        })
-    logger.info(f"Logged token usage: {model} {prompt_tokens}+{candidates_tokens}={total_tokens} ${cost_usd:.6f} "
-                f"(rate: {input_rate}/{output_rate} per 1M)")
+        },
+        execute=_execute,
+    )
+    if record is None:
+        return
+    logger.info(
+        f"Logged token usage: {model} {record['prompt_tokens']}+{record['candidates_tokens']}"
+        f"={record['total_tokens']} ${record['cost_usd']:.6f} "
+        f"(rate: {record['input_rate']}/{record['output_rate']} per 1M)"
+    )
 
 
 def get_sample_package() -> dict | None:
