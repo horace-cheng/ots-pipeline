@@ -18,7 +18,6 @@ tables, print-friendly stylesheet).
 """
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -29,7 +28,7 @@ from shared.config import cfg
 from shared.db import update_job_status, update_order_field
 from shared.deliver_html import (
     BASE_CSS, FONT_IMPORT, chapter_heading, chapter_text_block,
-    comparison_chapter_block, footer, html_text,
+    comparison_chapter_block, footer,
     render_doc, table_close, table_open,
 )
 from shared.notify import notify_stage
@@ -90,46 +89,6 @@ def _concat_text(entries: List[dict]) -> str:
 # Re-export FONT_IMPORT / BASE_CSS so callers that import them still work.
 FONT_IMPORT = FONT_IMPORT
 BASE_CSS = BASE_CSS
-
-# Legacy alias kept for backward-compat with tests that mock ``_html``.
-_html = html_text
-
-
-def _rows_two_col(entries: List[dict], key_a: str, key_b: str, label_a: str, label_b: str) -> str:
-    """Render a flat 2-col table (used by callers that bypass the chapter logic)."""
-    rows = []
-    for e in entries:
-        a = html_text(e.get(key_a, ""))
-        b = html_text(e.get(key_b, ""))
-        rows.append(f"<tr><td class='src'>{a}</td><td class='trans'>{b}</td></tr>")
-    return (
-        f"<table class='bilingual-table cols-2'><thead><tr><th>{label_a}</th><th>{label_b}</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
-    )
-
-
-def _rows_four_col(entries: List[dict]) -> str:
-    """Render a flat 4-col table (used by callers that bypass the chapter logic)."""
-    rows = []
-    for e in entries:
-        src    = html_text(e.get("source", ""))
-        trans  = html_text(e.get("translated", ""))
-        simp   = html_text(e.get("simplified", ""))
-        tailo  = html_text(e.get("tailo", ""))
-        rows.append(
-            f"<tr><td class='src'>{src}</td><td class='trans'>{trans}</td>"
-            f"<td class='simp'>{simp}</td><td class='tailo'>{tailo}</td></tr>"
-        )
-    return (
-        "<table class='bilingual-table cols-4'><thead><tr>"
-        "<th>原文</th><th>標準翻譯</th><th>青少年版</th><th>台羅版</th>"
-        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
-    )
-
-
-def _render_chapter_blocks(render_rows) -> str:
-    """Compatibility shim — older callers passed a ``render_rows`` thunk."""
-    return render_rows()
 
 
 def format_source_vs_chinese(

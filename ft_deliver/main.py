@@ -13,7 +13,7 @@ HTML uses the shared ``shared.deliver_html`` template for a clean,
 book-style reading experience.
 """
 
-import sys, json, re, logging, os
+import sys, json, logging, os
 from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy import text as sqla_text
@@ -24,7 +24,6 @@ from shared.config  import cfg
 from shared.db      import update_job_status, get_order_info, update_order_field, get_db, get_lang_labels
 from shared.deliver_html import html_text, render_doc, table_open, table_close
 from shared.storage import read_temp_json, write_output
-from shared.gemini  import judge
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")

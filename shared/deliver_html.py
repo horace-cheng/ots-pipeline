@@ -682,11 +682,6 @@ def build_bilingual_document(
     return "\n".join(body)
 
 
-def close_document(order_id: str = "") -> str:
-    """Close `<main>`, the document, with a footer."""
-    return f"{footer(order_id)}\n</main>\n</body>\n</html>"
-
-
 def render_doc(
     *,
     title: str,

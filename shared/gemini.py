@@ -2,7 +2,7 @@
 shared/gemini.py
 
 Gemini API 呼叫工具（via Google AI Developer API / genai SDK）。
-比 Vertex AI SDK 更簡單，model 可用性更廣（gemini-2.5-pro/flash 直接可用）。
+比 Vertex AI SDK 更簡單，model 可用性更廣（gemini-3.5-flash 直接可用）。
 Claude API 作為備援，切換由 TRANSLATION_BACKEND 環境變數控制。
 """
 

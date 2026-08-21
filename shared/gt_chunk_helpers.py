@@ -5,7 +5,7 @@ Shared helpers for the Gutenberg Track's three LLM stages:
 
   - gt_translate : English source segments → Traditional Chinese
   - gt_simplify  : Standard Chinese       → youth-friendly Chinese (whole-chapter stories)
-  - gt_tailo     : Simplified Chinese     → Hanzi + Tai-lo annotation (segment-based)
+  - gt_tailo     : youth-friendly Chinese → Hanzi + Tai-lo annotation (segment-based)
 
 Translate and tailo share the segment-based batching + [N]-marker pipeline.
 Simplify concatenates each chapter's translated segments into a single

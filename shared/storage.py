@@ -60,15 +60,6 @@ def write_temp_text(filename: str, content: str) -> str:
     return f"gs://{cfg.BUCKET_TEMP}/{gcs_path}"
 
 
-def list_temp_blobs(prefix: str) -> list[str]:
-    """列出 temp bucket 中以 prefix 開頭的所有 blob 檔名（不含 bucket path）"""
-    client = get_client()
-    bucket = client.bucket(cfg.BUCKET_TEMP)
-    full_prefix = _temp_path(prefix)
-    blobs = list(bucket.list_blobs(prefix=full_prefix))
-    return [b.name.split("pipeline/" + cfg.ORDER_ID + "/", 1)[-1] for b in blobs if not b.name.endswith("/")]
-
-
 def temp_blob_exists(filename: str) -> bool:
     """Return True if a blob exists at `pipeline/{ORDER_ID}/{filename}` in
     the temp bucket. Used as a cheap "checkpoint exists" check by gt_process_chunk

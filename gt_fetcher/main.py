@@ -52,7 +52,6 @@ TEXT_URL_PATTERNS = [
     "https://www.gutenberg.org/files/{id}/{id}.txt",
 ]
 SOURCE_FULL_TEXT = "source/full_text.txt"
-CHAPTERS_JSON    = "source/chapters.json"
 
 # Plain-text chapter detection (fallback only)
 CHAPTER_RE = re.compile(
